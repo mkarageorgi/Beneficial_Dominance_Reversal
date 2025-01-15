@@ -1,0 +1,206 @@
+---
+title: "Frequencies of resistant Ace alleles in GDRP panel"
+author: "Marianna Karageorgi"
+date: "2024-09-17"
+---
+
+## 1. DGRP Data
+
+The DGRP data can be found here: <http://dgrp2.gnets.ncsu.edu/data.html>
+
+We will work with the VCF File to extract the allele frequencies of the resistant Ace alleles. The allele frequencies in the dgrp data are in version 5. The Ace coordinates of extended gene region on genome version R5: 3R:9,048,673..9,085,239 [-]. The resistance mutations:
+
+I161V: Chr3R:9,069,721, v5.39
+
+G265A: Chr3R:9,069,408, v5.39
+
+F330Y: Chr3R:9,069,054 , v5.39
+
+G368A: Chr3R: 9,063,921 , v5.39
+
+```{r}
+library(data.table)
+library(tidyverse)
+library(vcfR)
+```
+
+The VCF is large and cannot be loaded in R. Here, we only view the first three rows to understand the structure of the file.
+
+-   The fix part contains information about the dataset and relevant reference sources (e.g. the organism, genome build version etc.).
+
+-   The gt part contains information for each sample, including frequency of the alternative allele
+
+```{r}
+dgrp.vcf = read.vcfR("./data/dgrp2.vcf", nrow=3)
+
+# # view the file
+# head(dgrp.vcf)
+# # view the first few rows of the fixed data (basic variant info)
+# dgrp.vcf@fix
+# # view the first few rows of the genotype data
+# dgrp.vcf@gt
+```
+
+## 1.1 Subset Ace region & Impute missing genotypes
+
+Use vcf tools to subset the Ace region:
+
+```{r}
+# Use vcftools to extract the Ace region
+system("vcftools --vcf data/dgrp2.vcf --chr 3R --from-bp 9048673 --to-bp 9085239 --recode --recode-INFO-all --out data/ace_region")
+
+# Read the extracted VCF file
+ace_region = read.vcfR("./data/ace_region.recode.vcf")
+
+# Ensure we're only working with biallelic SNPs
+biallelic_snps = is.biallelic(ace_region)
+ace_region_biallelic = ace_region[biallelic_snps, ]
+
+# Extract genotypes
+genotypes = extract.gt(ace_region_biallelic) 
+
+# Create a summary of the SNPs
+snp_summary = data.frame(
+  CHROM = ace_region_biallelic@fix[,"CHROM"],
+  POS = as.numeric(ace_region_biallelic@fix[,"POS"]),
+  REF = ace_region_biallelic@fix[,"REF"],
+  ALT = ace_region_biallelic@fix[,"ALT"]
+)
+
+# Adjust the command if you need specific parameters for Beagle
+system("java -jar beagle.06Aug24.a91.jar gt=data/ace_region.recode.vcf out=data/ace_region_imputed")
+
+# Read the imputed compressed VCF file
+imputed_genotypes = read.vcfR("./data/ace_region_imputed.vcf.gz")
+
+# Extract imputed genotypes
+imputed_genotypes_2 = extract.gt(imputed_genotypes)
+
+# Check the summary of the imputed data
+imputed_summary = data.frame(
+  CHROM = imputed_genotypes@fix[,"CHROM"],
+  POS = as.numeric(imputed_genotypes@fix[,"POS"]),
+  REF = imputed_genotypes@fix[,"REF"],
+  ALT = imputed_genotypes@fix[,"ALT"]
+)
+```
+
+## 
+
+## 2. Panel: S/R alleles
+
+```{r}
+Ace.genotypes = imputed_genotypes_2 %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "SNP_ID") %>%
+  separate_wider_delim(SNP_ID, delim = "_", names = c("CHROM", "POS","SNP")) %>%
+  mutate(POS = as.numeric(POS))  %>%
+  select(-SNP) 
+
+data.Ace.allele = Ace.genotypes %>%
+  
+  # Filter rows based on the four resistance mutations
+  filter(POS %in% c(9069721, 9069408, 9069054, 9063921)) %>%
+  
+  #remove lines with NA
+  select(where(~ !any(is.na(.)))) %>%
+  
+  # Transpose the resulting data frame
+  t() %>%
+  
+  # Convert the transposed data frame to a regular data frame
+  as.data.frame() %>%
+  
+  # Remove first row
+  slice(-1) %>%
+
+  # Set the column names based on the values from the first row
+  setNames(unlist(.[1,])) %>%
+  
+  # Remove first row
+  slice(-1) %>%
+  
+  # Convert the row names to a new column named "line"
+  rownames_to_column(var = "line") 
+  
+
+# Concatenate values from columns '9069721', '9069408', '9069054', and '9063921' into the new column 'Haplotype'
+data.Ace.allele$haplotype = paste(data.Ace.allele$`9069721`, data.Ace.allele$`9069408`, data.Ace.allele$`9069054`, data.Ace.allele$`9063921`, sep = "-") 
+
+# Get unique haplotypes
+unique_haplotypes = unique(data.Ace.allele$haplotype)
+
+# Mutate 'Haplotype.aa' column based on conditions
+data.Ace.haplo = data.Ace.allele %>%
+   
+  mutate(haplo = case_when(
+    haplotype == "1|1-1|1-1|1-0|0" ~ "VAYG.VAYG",
+    haplotype == "0|0-0|0-0|0-0|0" ~ "IGFG.IGFG",
+    haplotype == "0|0-1|1-0|0-0|0" ~ "IAFG.IAFG",
+    haplotype == "1|1-0|0-0|0-0|0" ~ "VGFG.VGFG",
+    haplotype == "0|0-0|0-1|1-0|0" ~ "IGYG.IGYG",
+    haplotype == "1|1-1|1-0|0-0|0" ~ "VGFG.VGFG",
+    haplotype == "1|1-0|0-0|0-1|1" ~ "VGFA.VGFA"
+  )) 
+  
+data.Ace.haplo.summary = data.Ace.haplo %>%
+  group_by(haplo) %>%
+  summarise(count = n())
+```
+
+#### 2.1. Table with allele frequencies
+
+Table with sensitive and resistant Ace allele frequencies in the inbred lines (Extended Data Figure)
+
+```{r}
+library(kableExtra)
+library(htmltools)
+library(webshot)
+
+# Count allele frequencies for figure 1/Extended Data Figure
+allele.count.Ace = data.Ace.haplo %>%
+  
+  # Separate the Haplotype.aa column into two new columns (Allele.1 and Allele.2)
+  separate(haplo, into = c("Allele.1", "Allele.2"), sep = "\\.") %>%
+  
+  # Pivot the data into a longer format to have a single column for haplotypes
+  pivot_longer(cols = Allele.1:Allele.2, 
+               names_to = "Allele", 
+               values_to = "Ace_allele") %>%
+  
+  # Count occurrences of each haplotype
+  dplyr::count(Ace_allele) %>%
+  
+  # Calculate frequency of each haplotype
+  mutate(relative_frequency = round(n / sum(n) * 100, 2)) %>%
+  arrange(desc(relative_frequency)) %>%
+  
+  # Keep only Ace allele & relative frequency, renaming columns for display
+  select(`Ace allele` = Ace_allele, `Relative frequency (%)` = relative_frequency)
+
+
+# View the result
+allele.count.Ace
+
+write_csv(allele.count.Ace, "./data/dgrp_Ace.csv")
+
+
+#### Prepare table ####
+table.allele.count.Ace = kable(x = allele.count.Ace, digits = 4, align = 'l',
+                               caption = "<b style='font-size:22px;'>Relative frequencies of sensitive and resistant <i>Ace</i> alleles in DGRP lines</b>",
+                               escape = FALSE) %>%
+                         kable_classic(full_width = TRUE, html_font = "Times New Roman", font_size = 22) %>%
+                         kable_styling(latex_options = c("striped", "hold_position"), position = "center") %>%
+                         row_spec(0, bold = TRUE, font_size = 20) %>%  # Make header bold and set font size
+                         row_spec(1:nrow(allele.count.Ace), font_size = 20)  # Smaller font for values
+
+table.allele.count.Ace
+
+# Save the table as an HTML file
+save_kable(table.allele.count.Ace, file = "./tables/table_dgrp_Ace_Alleles.html")
+
+# Use webshot to convert HTML to PDF
+webshot("./tables/table_dgrp_Ace_Alleles.html", file = "./tables/table_dgrp_Ace_Alleles.pdf")
+```
+
+## 
