@@ -6,6 +6,6 @@ Code and analysis by Marianna Karageorgi.
 
 Data available at: 
 - DGRP panel: http://dgrp2.gnets.ncsu.edu/data.html
-- LNPA panel: Add linke
+- LNPA panel: Add link
 
 Specif data used for analysis: [Dryad Digital Repository link]
