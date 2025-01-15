@@ -1,6 +1,3 @@
-[submodule "Figure_3e_ExtendedData_Figure4"]
-	path = Figure_3e_ExtendedData_Figure4
-	url = https://github.com/alyulina/dominance-reversal
 [submodule "Figure3e_ExtendedData_Figure4"]
 	path = Figure3e_ExtendedData_Figure4
 	url = https://github.com/alyulina/dominance-reversal
