@@ -1,0 +1,384 @@
+---
+title: "final plots"
+author: "egor lappo"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(patchwork)
+library(broom)
+library(egg)
+library(ggnewscale)
+```
+
+```{r, fig.width=6, fig.height=3}
+sites <- read_csv("plot_data/sites.csv", show_col_types=F)
+
+chrom_sizes <- sites %>% group_by(chrom) %>%
+  summarise(b = 1, e = max(pos)/1e6, y=0)
+```
+
+
+```{r 4a, fig.width=6, fig.height=3}
+
+sites_windows <- read_csv("plot_data/windows.csv") %>% 
+  mutate(mid=mid/1e6,
+         treatment_factor = factor(treatment, levels = c("P", "E")),
+         lm_median=-lm_median,
+         lm_lower=-lm_lower,
+         lm_upper=-lm_upper) %>%
+# new! filter out low-snp windows
+  filter(nsnp >= 20)
+
+
+sweep_data_3R <- data.frame(
+  chrom="3R",
+  x=c(4,4,4,17,17,17),
+  y=c(-0.1,-0.1,0.3,-0.1,-0.1,0.3),
+  xend=c(4,5,5,17,16,16),
+  yend=c(0.3,-0.1,0.3,0.3,-0.1,0.3)
+)
+
+sweep_data_3L <- data.frame(
+  chrom="3L",
+  x=c(5,5,5,19,19,19),
+  y=c(-0.1,-0.1,0.1,-0.1,-0.1,0.1),
+  xend=c(5,6,6,19,18,18),
+  yend=c(0.1,-0.1,0.1,0.1,-0.1,0.1)
+)
+
+sweep_data <- rbind(sweep_data_3R, sweep_data_3L)
+
+dplot <- sites_windows %>% filter(treatment == "P")
+
+p_PCage <- dplot %>% ggplot() + 
+  geom_segment(data=chrom_sizes, aes(x = b, xend = e, y = y, yend = y), color="white", alpha=0) +
+  geom_segment(data=filter(dplot,chrom == "3R"), aes(x = 9.069500, y=-0.1, yend=0.4), linetype="dashed", color="darkgray") + 
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  geom_segment(data=sweep_data, aes(x=x,y=y,xend=xend,yend=yend), color="black", size=0.5, linejoin="round") +
+  geom_text(data=data.frame(x=10, y=0.35, chrom="3R"), mapping=aes(x=x, y=y), label=expression(italic("Ace")), hjust="left", vjust="bottom", size=4) +
+  geom_text(data=data.frame(x=c(19.5,6.8), y=c(0.15,0.08), lab=c("*","*"), chrom=c("3L", "2R")), mapping=aes(x=x, y=y, label=lab), hjust="center", vjust="center", size=5) +
+  geom_line(aes(x=mid, y=lm_median, color=link)) +
+  geom_ribbon(aes(x=mid, ymin = lm_lower, ymax = lm_upper, fill=link), alpha = 0.5) +
+  facet_wrap(vars(chrom), nrow=1, scales = "free_x", strip.position="bottom") + 
+  theme_classic() + 
+  # color and color legend
+  scale_color_manual(name = "",
+                    labels = c(expression(italic("Ace")*"-linked"), "Control"),
+                    values = c("#FFA500","grey")) +
+  scale_alpha_manual(name="", values = c(0.1, 0.5, 0.9)) +
+  # also adjust fill, hiding the legend
+  scale_fill_manual(values = c("#FFA500","grey")) +
+  guides(fill=FALSE, alpha=FALSE) +
+  ylim(-0.1,0.4) + 
+  labs(x = "Position, Mb",
+       y = "Effect size\nduring treatment") + 
+  theme(strip.background = element_blank(), 
+        legend.position = "top", 
+        legend.text = element_text(size=12),
+        axis.title = element_text(size = 12),
+        strip.text = element_text(size=8))
+
+ggsave("plots/4a.pdf", p_PCage, width = 6, height = 3)
+
+p_PCage
+```
+
+```{r 4b, fig.width=6, fig.height=3}
+dplot <- sites_windows %>% filter(treatment == "E")
+
+p_ECage <- dplot %>% ggplot() + 
+  geom_segment(data=chrom_sizes, aes(x = b, xend = e, y = y, yend = y), color="white", alpha=0) +
+  geom_segment(data=filter(dplot,chrom == "3R"), aes(x = 9.069500, y=-0.1, yend=0.4), linetype="dashed", color="darkgray") + 
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  geom_text(data=data.frame(x=10, y=0.35, chrom="3R"), mapping=aes(x=x, y=y), label=expression(italic("Ace")), hjust="left", vjust="bottom", size=4) +
+  geom_line(aes(x=mid, y=lm_median, color=link)) +
+  geom_ribbon(aes(x=mid, ymin = lm_lower, ymax = lm_upper, fill=link), alpha = 0.5) +
+  facet_wrap(vars(chrom), nrow=1, scales = "free_x", strip.position="bottom") + 
+  theme_classic() + 
+  # color and color legend
+  scale_color_manual(name = "",
+                    labels = c(expression(italic("Ace")*"-linked"), "Control"),
+                    values = c("#274060","grey")) + 
+  # also adjust fill, hiding the legend
+  scale_fill_manual(values = c("#274060","grey")) +
+  guides(fill=FALSE, alpha=FALSE) +
+  ylim(-0.1,0.4) + 
+  labs(x = "Position, Mb",
+       y = "Effect size\nduring treatment") + 
+  theme(strip.background = element_blank(), 
+        legend.position = "top", 
+        legend.text = element_text(size=12),
+        axis.title = element_text(size = 12),
+        strip.text = element_text(size=8))
+
+ggsave("plots/4b.pdf", p_ECage, width = 6, height = 3)
+
+p_ECage
+```
+
+```{r 4c, fig.width=6, fig.height=3}
+sites_windows_post <- read_csv("plot_data/windows_post.csv") %>% 
+  mutate(mid=mid/1e6,
+         treatment_factor = factor(treatment, levels = c("P", "E")),
+         lm_median=-lm_median,
+         lm_lower=-lm_lower,
+         lm_upper=-lm_upper) %>%
+  filter(nsnp >= 20)
+
+dplot <- sites_windows_post %>% filter(treatment == "P")
+
+sweep_data <- data.frame(
+  chrom="3R",
+  x=c(8,8,8,13,13,13),
+  y=c(-0.1,-0.1,0.1,-0.1,-0.1,0.1),
+  xend=c(8,9,9,13,12,12),
+  yend=c(0.1,-0.1,0.1,0.1,-0.1,0.1)
+)
+
+p_PCage_post <- dplot %>% ggplot() + 
+  geom_segment(data=chrom_sizes, aes(x = b, xend = e, y = y, yend = y), color="white", alpha=0) +
+  geom_segment(data=filter(dplot,chrom == "3R"), aes(x = 9.069500, y=-0.1, yend=0.4), linetype="dashed", color="darkgray") + 
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  geom_segment(data=sweep_data, aes(x=x,y=y,xend=xend,yend=yend), color="black", size=0.5, linejoin="round") +
+  geom_text(data=data.frame(x=10, y=0.35, chrom="3R"), mapping=aes(x=x, y=y), label=expression(italic("Ace")), hjust="left", vjust="bottom", size=4) +
+  geom_line(aes(x=mid, y=lm_median, color=link)) +
+  geom_ribbon(aes(x=mid, ymin = lm_lower, ymax = lm_upper, fill=link), alpha = 0.5) +
+  facet_wrap(vars(chrom), nrow=1, scales = "free_x", strip.position="bottom") + 
+  theme_classic() + 
+  # color and color legend
+  scale_color_manual(name = "",
+                    labels = c(expression(italic("Ace")*"-linked"), "Control"),
+                    values = c("#FFA500","grey")) + 
+  scale_alpha_manual(name="", values = c(0.1, 0.5, 0.9)) +
+  # also adjust fill, hiding the legend
+  scale_fill_manual(values = c("#FFA500","grey")) +
+  guides(fill=FALSE, alpha=FALSE) +
+  ylim(-0.1,0.4) + 
+  labs(x = "Position, Mb",
+       y = "Effect size\nafter treatment") + 
+  theme(strip.background = element_blank(), 
+        legend.position = "top", 
+        legend.text = element_text(size=12),
+        axis.title = element_text(size = 12),
+        strip.text = element_text(size=8))
+
+ggsave("plots/4_post-trt_a.pdf", p_PCage_post, width = 6, height = 3)
+
+p_PCage_post
+```
+
+```{r 4d, fig.width=6, fig.height=3}
+dplot <- sites_windows_post %>% filter(treatment == "E")
+
+p_ECage_post <- dplot %>% ggplot() + 
+  geom_segment(data=chrom_sizes, aes(x = b, xend = e, y = y, yend = y), color="white", alpha=0) +
+  geom_segment(data=filter(dplot,chrom == "3R"), aes(x = 9.069500, y=-0.1, yend=0.4), linetype="dashed", color="darkgray") + 
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  geom_text(data=data.frame(x=10, y=0.35, chrom="3R"), mapping=aes(x=x, y=y), label=expression(italic("Ace")), hjust="left", vjust="bottom", size=4) +
+  geom_line(aes(x=mid, y=lm_median, color=link)) +
+  geom_ribbon(aes(x=mid, ymin = lm_lower, ymax = lm_upper, fill=link), alpha = 0.5) +
+  facet_wrap(vars(chrom), nrow=1, scales = "free_x", strip.position="bottom") + 
+  theme_classic() + 
+  # color and color legend
+  scale_color_manual(name = "",
+                    labels = c(expression(italic("Ace")*"-linked"), "Control"),
+                    values = c("#274060","grey")) + 
+  # also adjust fill, hiding the legend
+  scale_fill_manual(values = c("#274060","grey")) +
+  guides(fill=FALSE, alpha=FALSE) +
+  ylim(-0.2,0.4) + 
+  labs(x = "Position, Mb",
+       y = "Effect size\nafter treatment") + 
+  theme(strip.background = element_blank(), 
+        legend.position = "top", 
+        legend.text = element_text(size=12),
+        axis.title = element_text(size = 12),
+        strip.text = element_text(size=8))
+
+ggsave("plots/4_post-trt_b.pdf", p_ECage_post, width = 6, height = 3)
+
+p_ECage_post
+```
+
+```{r 4e, fig.width=6, fig.height=3}
+l_colors <- c("#FF6600", "#FFA500", "#FFCC00", "#FFFF00")
+c_colors <- c("#000033", "#274060", "#9999cc", "#ccccff")
+
+drev <- read_csv('plot_data/reversal.csv') %>% 
+  mutate(pos = pos/1e6) %>% 
+  filter(chrom == "3R", treatment=="P") %>%
+  mutate(distance = pos - 9.069500) %>%
+  filter(abs(distance) <= 1) %>%
+  mutate(distance = factor(cut(distance, breaks=c(-1,-0.5,0,0.5,1)))) 
+
+
+dreg <- drev %>%
+  mutate(link = factor(link, levels=c("unlinked", "linked"))) %>%
+  group_by(distance, link) %>%
+  # drop groups with less than 2 observations 
+  filter(n() > 1) %>% ungroup() %>% group_by(distance) %>%
+  # drop groups where only linked or unlinked are present
+  filter(n_distinct(link) > 1) %>%
+  # regress trt on post_trt
+  do(tidy(lm(trt ~ post_trt*link, data=.))) %>% 
+  select(distance, term, estimate, p.value) %>%
+  pivot_wider(id_cols=c(distance), names_from = term, values_from = c(estimate, p.value)) %>%
+  mutate(signif_slope = ifelse((p.value_post_trt < 0.05) & (estimate_post_trt < 0), "*", ""),
+         signif_difference = ifelse((`p.value_post_trt:linklinked` < 0.05) & (`estimate_post_trt:linklinked` < 0), "*", "")) %>%
+  select(distance, signif_slope, signif_difference) %>%
+  pivot_longer(cols=c("signif_slope", "signif_difference"), names_to="type", values_to="signif") %>%
+  mutate(x=0.05, y=ifelse(type=="signif_slope", 0.4, 0.25)) %>%
+  filter(type != "signif_slope")
+
+p_rev_P <- ggplot() + 
+  geom_vline(xintercept=0, linetype="dashed") + 
+  geom_hline(yintercept=0, linetype="dashed") +
+  geom_point(data=drev, mapping=aes(x=post_trt, y=trt, color=link), alpha=0.4) +
+  geom_smooth(data=drev, mapping=aes(x=post_trt, y=trt, color=link), method="lm", se=F) +
+  scale_color_manual(name = "",
+                    labels = c(expression(italic("Ace")*"-linked"), "Control"), values=c("#FFA500", "gray")) +
+  
+  # guides(color=FALSE) +
+  new_scale_color() +
+  geom_text(data=dreg, aes(x=x, y=y, label=signif, color=type), size=10, hjust="center", vjust="center") +
+  scale_color_manual(values=c("#FF6600", "black")) +
+  guides(color=FALSE) +
+  labs(x="Effect size\nafter treatment", y="Effect size\nduring treatment") +
+  facet_wrap(vars(distance), ncol= 4) + 
+  # Define axis range and step
+  scale_x_continuous(limits = c(-0.1, 0.1), breaks = seq(-0.05, 0.05, by = 0.05)) +
+  scale_y_continuous(limits = c(-0.55, 0.55), breaks = seq(-0.5, 0.5, by = 0.2)) +
+  
+  theme_classic() + 
+  theme(strip.background = element_blank(), 
+        legend.position = "top", 
+        legend.text = element_text(size=12),
+        axis.title = element_text(size = 12),
+        strip.text = element_text(size=10),
+        
+        axis.text.x = element_text(angle = 90,  
+                                   hjust = 1,  
+                                   vjust = 0.5))   
+
+
+ggsave("plots/4e.pdf", p_rev_P, width = 6, height = 3)
+p_rev_P
+```
+
+```{r 4f, fig.width=6, fig.height=3}
+l_colors <- c("#FF6600", "#FFA500", "#FFCC00", "#FFFF00")
+c_colors <- c("#000033", "#274060", "#9999cc", "#ccccff")
+
+drev <- read_csv('plot_data/reversal.csv') %>% 
+  mutate(pos = pos/1e6) %>% 
+  filter(chrom == "3R", treatment=="E") %>%
+  mutate(distance = pos - 9.069500) %>%
+  filter(abs(distance) <= 1) %>%
+  mutate(distance = factor(cut(distance, breaks=c(-1,-0.5,0,0.5,1)))) 
+
+
+dreg <- drev %>%
+  mutate(link = factor(link, levels=c("unlinked", "linked"))) %>%
+  group_by(distance, link) %>%
+  # drop groups with less than 2 observations 
+  filter(n() > 1) %>% ungroup() %>% group_by(distance) %>%
+  # drop groups where only linked or unlinked are present
+  filter(n_distinct(link) > 1) %>%
+  # regress trt on post_trt
+  do(tidy(lm(trt ~ post_trt*link, data=.))) %>% 
+  select(distance, term, estimate, p.value) %>%
+  pivot_wider(id_cols=c(distance), names_from = term, values_from = c(estimate, p.value)) %>%
+  mutate(signif_slope = ifelse((p.value_post_trt < 0.05) & (estimate_post_trt < 0), "*", ""),
+         signif_difference = ifelse((`p.value_post_trt:linklinked` < 0.05) & (`estimate_post_trt:linklinked` < 0), "*", "")) %>%
+  select(distance, signif_slope, signif_difference) %>%
+  pivot_longer(cols=c("signif_slope", "signif_difference"), names_to="type", values_to="signif") %>%
+  mutate(x=0.05, y=ifelse(type=="signif_slope", 0.4, 0.25))
+
+p_rev_E <- ggplot() + 
+  geom_vline(xintercept=0, linetype="dashed") + 
+  geom_hline(yintercept=0, linetype="dashed") +
+  geom_point(data=drev, mapping=aes(x=post_trt, y=trt, color=link), alpha=0.4) +
+  geom_smooth(data=drev, mapping=aes(x=post_trt, y=trt, color=link), method="lm", se=F) +
+  scale_color_manual(name = "",
+                    labels = c(expression(italic("Ace")*"-linked"), "Control"), values=c("#274060", "gray")) +
+  labs(x="Effect size\nafter treatment", y="Effect size\nduring treatment") +
+  facet_wrap(vars(distance), ncol= 4) + 
+  
+  # Define axis range and step
+  scale_x_continuous(limits = c(-0.1, 0.1), breaks = seq(-0.05, 0.05, by = 0.05)) +
+  scale_y_continuous(limits = c(-0.55, 0.55), breaks = seq(-0.5, 0.5, by = 0.2)) +
+  
+  theme_classic() + 
+  theme(strip.background = element_blank(), 
+        legend.position = "top", 
+        legend.text = element_text(size=12),
+        axis.title = element_text(size = 12),
+        strip.text = element_text(size=10),
+        
+        axis.text.x = element_text(angle = 90,  
+                                   hjust = 1,  
+                                   vjust = 0.5))   
+
+ggsave("plots/4f.pdf", p_rev_E, width = 6, height = 3)
+p_rev_E
+```
+
+```{r}
+library(ggpubr)
+
+# did not use these plots
+
+plot_p = ggarrange(p_PCage, p_PCage_post, p_rev_P,
+          nrow = 3,
+          common.legend = TRUE)
+
+plot_e = ggarrange(p_ECage, p_ECage_post, p_rev_E,
+          nrow = 3,
+          common.legend = TRUE)
+```
+
+```{r}
+# swidth_3R <- read_csv('plot_data/sweep_width.csv') %>% 
+#   select(-c("...1", 'level_3')) %>%
+#   mutate(sweep = "Forward sweep, 3R")
+# swidth_3L <- read_csv('plot_data/sweep_width_3L.csv') %>% 
+#   select(-c("...1", 'level_3')) %>%
+#   mutate(sweep = "Forward sweep, 3L", chrom='3L')
+# swidth_post <- read_csv('plot_data/sweep_width_post.csv') %>% 
+#   select(-c("...1", 'level_3')) %>%
+#   mutate(sweep = "Reverse sweep")
+# 
+# swidth <- bind_rows(swidth_3R, swidth_3L, swidth_post) %>% 
+#   mutate(sweep = factor(sweep, levels=c("Forward sweep, 3R", "Forward sweep, 3L", "Reverse sweep")),
+#          width = width/1e6, left = left/1e6, right = right/1e6)
+# 
+# left <- ggplot(swidth, aes(x=width)) + 
+#           geom_density(fill='#30a4bc', color='black') + 
+#           facet_wrap(vars(sweep), ncol=1, scales = "free") +
+#           labs(x="Sweep width, Mb", y="Density") +
+#           theme_classic() + 
+#           theme(strip.background = element_blank()) +
+#           ggtitle('Width bootstrap')
+# 
+# swidth_long <- swidth %>% 
+#   group_by(sweep) %>%
+#   pivot_longer(cols=c("left", "right"), names_to="end", values_to="pos")
+# 
+# right <- ggplot(swidth_long) +
+#           geom_density(aes(x=pos, fill=end)) + 
+#           facet_wrap(vars(sweep), ncol=1, scales = "free") +
+#           scale_fill_manual(label='Boundary', values=c("#ffce1b", "#782e6e")) +
+#           labs(x="Sweep endpoints, Mb", y="Density") +
+#           theme_classic() + 
+#           theme(strip.background = element_blank()) + 
+#           ggtitle('Boundaries bootstrap')
+# 
+# p_width <- left + right
+# 
+# ggsave("plots/4_extended.pdf", p_width, width = 8, height = 6)
+# 
+# p_width
+```
