@@ -1,6 +1,6 @@
 ## Extended Data Figure 1
 
-This code reproduces Extended Data Figure 1, which characterizes the distribution of sensitive and resistant _Ace_ alleles in two _D. melanogaster_ inbred line collections (LNPA and DGRP panels). 
+This code reproduces Extended Data Figure 1, which characterizes the frequencies of sensitive and resistant _Ace_ alleles in two _D. melanogaster_ inbred line collections (LNPA and DGRP panels). 
 
 Code and analysis by Marianna Karageorgi.
 
