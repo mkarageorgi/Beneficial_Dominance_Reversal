@@ -1,2 +1,3 @@
 *.csv
 *.RData
+!ace_haplotypes.csv

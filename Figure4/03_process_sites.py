@@ -75,7 +75,7 @@ if __name__ == "__main__":
         )
         .with_columns(
             pl.col("afmat_indices")
-            .map_elements(lambda s: afmat[s["site_idx"], s["freq_idx"]])
+            .map_elements(lambda s: afmat[s["site_idx"], s["freq_idx"]], return_dtype=pl.Float64)
             .alias("initial_freq")
         )
         .drop(["freq_idx", "afmat_indices"])
