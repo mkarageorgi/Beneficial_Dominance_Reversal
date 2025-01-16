@@ -9,7 +9,7 @@ This code reproduces Figure 2.
 The R scripts require the following packages: `c("tidyverse", "data.table", "broom", "boot", "boot.pval", "multcomp", "emmeans", "msm", "drc", "modelsummary", "ggpubr", "ggthemes", "ggnewscale", "kableExtra", "htmltools", "webshot")`.
 
 These packages serve different purposes:
-* Data manipulation: `tidyverse`, `data.table`, 
+* Data manipulation: `tidyverse`, `data.table` 
 * Statistical analysis: `broom`, `boot`, `boot.pval`, `multcomp`, `emmeans`, `msm`, `drc`, `modelsummary`  
 * Visualization: `ggpubr`, `ggthemes`,`ggnewscale`
 * Output formatting: `kableExtra`, `htmltools`, `webshot`
