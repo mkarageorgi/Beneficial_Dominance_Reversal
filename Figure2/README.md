@@ -16,4 +16,5 @@ These packages serve different purposes:
 
 Data collected by Zach Mouza, Anastasia Andreeva, and Marianna Karageorgi.  
 Code and analysis by Marianna Karageorgi
+
 StatTable.R written by Danae Papadopetraki
