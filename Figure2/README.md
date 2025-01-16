@@ -1,5 +1,5 @@
 # Figure 2
-This code reproduces Figure 2.
+This code reproduces Figure 2, which demonstrates beneficial dominance reversal in Ace resistance alleles through measuresuments of relevant fitness-associated phenotypes. The analysis includes malathion LD50 comparisons between Ace genotypes (d-f), egg-adult viability comparisons between Ace genotypes in malathion-free conditions (g-i), and fecundity measurements between Ace genotypes in malathion-free conditions (j-l).
 
 ### How to generate the figure
 * First, obtain the relevant file within the data folder. Place the file under `data/`
