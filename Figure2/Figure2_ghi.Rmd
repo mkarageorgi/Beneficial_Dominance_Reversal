@@ -1,0 +1,947 @@
+---
+title: "Comparison of Egg-adult viability between Ace genotypes in the absence of malathion"
+author: "Marianna Karageorgi & Zach Mouza"
+date: "2023-08-09"
+output:
+  pdf_document: default
+---
+
+# 1. Data
+
+Starting July 6th 2023, eggs of each D.melanogaster genotype (SS, R1R1, R2R2, R3R3, SR1, SR2, SR3) were exposed to regular Drosophila media (50 eggs/trial). For each genotype we had 10 replicates.
+
+The resistant alleles are Ace-S: IGFG, Ace-R1: [V]{.underline}GFG, Ace-R2: [V]{.underline}GF[A]{.underline}, Ace-R3: [VAY]{.underline}G
+
+### Data Wrangling
+
+```{r}
+library(tidyverse)
+library(data.table)
+```
+
+```{r}
+data = fread("./data/Viability_FINAL.csv")
+
+data.viability = data %>%
+  mutate(
+    Emerge = rowSums(select(., 4:12), na.rm = TRUE),
+    Total = 50,
+    Not_Emerge = Total - Emerge,
+    Survival = Emerge / Total * 100) %>%
+  
+    mutate(Genotype = factor(Genotype, 
+                             levels = c("SS","SR1","SR2","SR3","R1R1", "R2R2", "R3R3"))) %>%
+  select(Genotype, Emerge, Not_Emerge, Survival, Total)
+```
+
+### Summary Statistics
+
+```{r}
+data.viability.summary = group_by(data.viability, Genotype) %>%
+  summarise(
+    count = n(),
+    mean = mean(Survival, na.rm = TRUE),
+    sd = sd(Survival, na.rm = TRUE),
+    se = sd / sqrt(10)
+  )
+```
+
+### Viability data: Exploratory Data Analysis
+
+```{r}
+library("ggpubr")
+library("ggplot2")
+
+
+# Define the custom colors for the palette
+genotype_colors = c("black", "#FCCC1A","#8601AF","#FE2712",  "#FCCC1A", "#8601AF",   "#FE2712")
+
+# Define the linetypes for the boxes
+linetypes = c(1, 2, 2, 2, 1, 1, 1)
+
+
+viability_plot = ggplot(data.viability, 
+                        aes(Genotype, Survival)) +
+  
+  geom_boxplot(aes(linetype = Genotype, color = Genotype), fill = NA) +
+  
+  geom_point(aes(color = Genotype)) +  
+  scale_color_manual(values = genotype_colors) +
+  scale_linetype_manual(values = linetypes) +
+  labs(x = NULL, y = "Egg to adult vialibity (%)") +
+  ylim(40, 100) + 
+  theme_classic() 
+
+viability_plot 
+```
+
+# 2. Statistics
+
+Analyze viability data for homozygous sensitive SS, homozygous resistant RR, and heterozygous SR genotypes for each resistant allele using logistic regression model. Use a logistic model because of grouped binary data (nr of egg emerged out of 50 eggs).
+
+The model is:
+
+logit(p)=log(p/(1-p)= b0​+b1​⋅SR+b2​⋅RR+ϵ
+
+The odds of emergence for each genotype is represented:
+
+For SS (reference group): odds.emerge.SS​=b0​
+
+For SR: odds.emerge.SR=b0+b1
+
+For RR: odds.emerge.RR=b0+b2
+
+Transform logit values to probabilities of emergence:
+
+proportion_SS = exp(logit_SS) / (1 + exp(logit_SS))
+
+proportion_SR = exp(logit_SR) / (1 + exp(logit_SR))
+
+proportion_RR = exp(logit_RR) / (1 + exp(logit_RR))
+
+Perform post hoc pairwise t-tests (adjusted following Benjamini-Hochberg) to compare the genotypes.
+
+**Additivity: Comparison between SR vs. (SS+RR)/2**
+
+Additivity is calculated as the difference between the SR genotype and the average of SS and RR genotypes. It can be compared to the expected value under additivity.
+
+-   Expected value under additivity:
+
+    SR- (SS+RR)/2 = proportion_SR -(proportion_SS+proportion_RR)/2
+
+-   Use bootstrap methods to calculate confidence intervals for the additivity estimate, and determine whether the confidence interval includes 0.
+
+-   Significance testing with two one-sided t-test: H0 = the estimate for additivity is 0. Ha1 = the estimate for dominance is higher than 0 Ha2 = the estimate for dominance is lower than 0.
+
+**Selection coefficient: Estimate ratio (RR - SS)/ SS**
+
+The selection coefficient is the ratio of the difference between RR and SS genotypes to the SS genotype. This parameter indicates how selection affects the fitness of the resistant genotype compared to the sensitive genotype.
+
+-   Estimate ratio (RR-SS)/SS = (proportion_RR-proportion_SS)/proportion_SS
+
+-   Use bootstrap methods to calculate confidence intervals for the selection coefficient, and determine whether the confidence interval includes 0.
+
+-   Significance testing with two-sided t-test: H0 = the estimate for selection equals to 0. Ha = the estimate for selection is different from 0.
+
+**Dominance coefficient: Estimate (SR−SS)/(RR−SS) (h)**
+
+The dominance coefficient measures the degree to which the heterozygous genotype (SR) exhibits fitness that is intermediate between the homozygous genotypes (SS and RR).
+
+-   Estimate ratio (proportion_SR-proportion_SS)/(proportion_RR-proportion_SS)
+
+-   Use bootstrap methods to calculate confidence intervals for the dominance coefficient, and determine whether the confidence interval includes 0.5.
+
+-   Significance testing with two one-sided t-test: H0 = the estimate for dominance is 0.5. Ha1 = the estimate for dominance is higher than 0.5. Ha2 = the estimate for dominance is lower than 0.5
+
+```{r}
+library(broom)
+library(multcomp) 
+library(emmeans)
+library(msm)
+library(boot)
+library(ggpubr)
+library(boot.pval)
+library(modelsummary)
+```
+
+### 2.1 Ace R1 genotype
+
+```{r}
+# Data R1 
+data.viability.R1 = data.viability %>% 
+  # Filter data 
+  filter(Genotype %in% c("SS", "SR1", "R1R1")) %>%
+  # Level data so the SS is the ref
+  mutate(Genotype = factor(Genotype, levels = c("SS","SR1", "R1R1")))
+  
+# Fit logistic binomial model
+model.R1 = glm(cbind(Emerge, Not_Emerge) ~ Genotype, data = data.viability.R1, family = "binomial")
+  
+# Calculate estimated marginal means for the Genotype on the response scale (probability) - otherwise the model gives logit values
+emmeans(model.R1, ~ Genotype, type = "response")
+
+# Extract values for table
+emm.R1 = tidy(emmeans(model.R1, ~ Genotype, type = "response"))
+
+SS.mean = round(emm.R1 %>% filter(Genotype == "SS") %>% pull(prob),2)
+SR1.mean = round(emm.R1 %>% filter(Genotype == "SR1") %>% pull(prob),2)
+R1R1.mean = round(emm.R1 %>% filter(Genotype == "R1R1") %>% pull(prob),2)
+
+SS.se = round(emm.R1 %>% filter(Genotype == "SS") %>% pull(std.error),2)
+SR1.se = round(emm.R1 %>% filter(Genotype == "SR1") %>% pull(std.error),2)
+R1R1.se = round(emm.R1 %>% filter(Genotype == "R1R1") %>% pull(std.error),2)
+
+# Perform pairwise comparisons
+pairwise_comparisons.R1 = pairs(emmeans(model.R1, ~ Genotype, type = "response"))
+  
+# Adjusting for multiple comparisons using FDR (Benjamini-Hochberg)
+pwc.R1 = summary(pairwise_comparisons.R1, adjust = "BH")
+  
+SS.SR1 = round(pwc.R1 %>% filter(contrast == "SS / SR1") %>% pull(odds.ratio),2)
+SS.R1R1 = round(pwc.R1 %>% filter(contrast == "SS / R1R1") %>% pull(odds.ratio),2)
+SR1.R1R1 = round(pwc.R1 %>% filter(contrast == "SR1 / R1R1") %>% pull(odds.ratio),2)
+
+SS.SR1.se = round(pwc.R1 %>% filter(contrast == "SS / SR1") %>% pull(SE),2)
+SS.R1R1.se = round(pwc.R1 %>% filter(contrast == "SS / R1R1") %>% pull(SE),2)
+SR1.R1R1.se = round(pwc.R1 %>% filter(contrast == "SR1 / R1R1") %>% pull(SE),2)
+
+SS.SR1.p = round(pwc.R1 %>% filter(contrast == "SS / SR1") %>% pull(p.value),4)
+SS.R1R1.p = round(pwc.R1 %>% filter(contrast == "SS / R1R1") %>% pull(p.value),4)
+SR1.R1R1.p = round(pwc.R1 %>% filter(contrast == "SR1 / R1R1") %>% pull(p.value),4)
+```
+
+**Bootstrapping to calculate confidence intervals**
+
+Define a function that will fit the linear model to a resampled dataset and compute the additivity, selection coefficient, and dominance coefficient and confidence intervals.
+
+```{r}
+bootstrap_function.R1 = function(data, indices) {
+  sample_data = data[indices, ]  # Resample data
+  model = glm(cbind(Emerge, Not_Emerge) ~ Genotype, data = sample_data, family = "binomial")
+  coefficients = coef(model)
+  
+  b0 = coefficients["(Intercept)"]
+  b1 = coefficients["GenotypeSR1"]
+  b2 = coefficients["GenotypeR1R1"]
+  
+  # Transform logit values to probabilities
+  proportion_SS = exp(b0) / (1 + exp(b0))
+  proportion_SR1 = exp(b0 + b1) / (1 + exp(b0 + b1))
+  proportion_R1R1 = exp(b0 + b2) / (1 + exp(b0 + b2))
+  
+  # Calculate additivity
+  deviation_from_additivity = proportion_SR1 - (proportion_SS + proportion_R1R1) / 2
+  
+  # Calculate selection coefficient
+  selection_coefficient = (proportion_R1R1 - proportion_SS) / proportion_SS
+  
+  # Calculate dominance coefficient
+  dominance_coefficient = (proportion_SR1 - proportion_SS) / (proportion_R1R1 - proportion_SS)
+  
+  return(c(additivity = deviation_from_additivity, selection = selection_coefficient, dominance = dominance_coefficient))
+}
+
+# Set seed for reproducibility
+set.seed(123)
+
+bootstraps = 1000 
+
+# Perform bootstrap with 1000 replicates
+results.R1 = boot(data = data.viability.R1, statistic = bootstrap_function.R1, R = bootstraps)
+
+# bootstrap values
+deviation_additivity.R1 = results.R1$t0[1]
+selection.R1 = results.R1$t0[2]
+dominance.R1 = results.R1$t0[3]
+
+# Extract bootstrap replicates (bootstrapped statistics)
+boot_estimates = results.R1$t  # This extracts all the bootstrap replicates
+
+# Calculate standard errors for each statistic
+se_additivity_R1 = sd(boot_estimates[, 1])  # For additivity
+se_selection_R1 = sd(boot_estimates[, 2])   # For selection coefficient
+se_dominance_R1 = sd(boot_estimates[, 3])   # For dominance coefficient
+
+# Compute confidence intervals
+deviation_additivity_ci.R1 = boot.ci(boot.out = results.R1, type = "perc", index = 1)  # Deviation from additivity
+selection_ci.R1 = boot.ci(boot.out = results.R1, type = "perc", index = 2)  # Selection coefficient
+dominance_ci.R1 = boot.ci(boot.out = results.R1, type = "perc", index = 3)  # Dominance coefficient
+
+# extract CI values
+deviation_additivity_ci.R1.lower_ci = round(deviation_additivity_ci.R1$percent[4],2)  # Lower limit
+deviation_additivity_ci.R1.upper_ci = round(deviation_additivity_ci.R1$percent[5],2)  # Upper limit
+
+selection_ci.R1.lower_ci = round(selection_ci.R1$percent[4],2)  # Lower limit
+selection_ci.R1.upper_ci = round(selection_ci.R1$percent[5],2)  # Upper limit
+
+dominance_ci.R1.lower_ci = round(dominance_ci.R1$percent[4],2)  # Lower limit
+dominance_ci.R1.upper_ci = round(dominance_ci.R1$percent[5],2)  # Upper limit
+
+
+# Compute p-values for each statistic
+pvalue_additivity.R1 = round(boot.pval(results.R1, index = 1, type = "perc", theta_null = 0),4)  # p-value for deviation from additivity
+pvalue_selection.R1 = round(boot.pval(results.R1, index = 2, type = "perc", theta_null = 0),4)   # p-value for selection coefficient
+pvalue_dominance.R1 = round(boot.pval(results.R1, index = 3, type = "perc", theta_null = 0.5),4)   # p-value for dominance coefficient
+```
+
+### 2.2 Ace R2 genotype
+
+```{r}
+# Data R2 
+data.viability.R2 = data.viability %>% 
+  # Filter data for Genotypes SS, SR2, and R2R2
+  filter(Genotype %in% c("SS", "SR2", "R2R2")) %>%
+  # Level data so the SS is the reference
+  mutate(Genotype = factor(Genotype, levels = c("SS","SR2", "R2R2")))
+  
+# Fit logistic binomial model
+model.R2 = glm(cbind(Emerge, Not_Emerge) ~ Genotype, data = data.viability.R2, family = "binomial")
+  
+# Calculate estimated marginal means for the Genotype on the response scale (probability) - otherwise the model gives logit values
+emmeans(model.R2, ~ Genotype, type = "response")
+
+# Extract values for table
+emm.R2 = tidy(emmeans(model.R2, ~ Genotype, type = "response"))
+
+SS.mean = round(emm.R2 %>% filter(Genotype == "SS") %>% pull(prob),2)
+SR2.mean = round(emm.R2 %>% filter(Genotype == "SR2") %>% pull(prob),2)
+R2R2.mean = round(emm.R2 %>% filter(Genotype == "R2R2") %>% pull(prob),2)
+
+SS.se = round(emm.R2 %>% filter(Genotype == "SS") %>% pull(std.error),2)
+SR2.se = round(emm.R2 %>% filter(Genotype == "SR2") %>% pull(std.error),2)
+R2R2.se = round(emm.R2 %>% filter(Genotype == "R2R2") %>% pull(std.error),2)
+
+# Perform pairwise comparisons
+pairwise_comparisons.R2 = pairs(emmeans(model.R2, ~ Genotype, type = "response"))
+  
+# Adjusting for multiple comparisons using FDR (Benjamini-Hochberg)
+pwc.R2 = summary(pairwise_comparisons.R2, adjust = "BH")
+  
+SS.SR2 = round(pwc.R2 %>% filter(contrast == "SS / SR2") %>% pull(odds.ratio),2)
+SS.R2R2 = round(pwc.R2 %>% filter(contrast == "SS / R2R2") %>% pull(odds.ratio),2)
+SR2.R2R2 = round(pwc.R2 %>% filter(contrast == "SR2 / R2R2") %>% pull(odds.ratio),2)
+
+SS.SR2.se = round(pwc.R2 %>% filter(contrast == "SS / SR2") %>% pull(SE),2)
+SS.R2R2.se = round(pwc.R2 %>% filter(contrast == "SS / R2R2") %>% pull(SE),2)
+SR2.R2R2.se = round(pwc.R2 %>% filter(contrast == "SR2 / R2R2") %>% pull(SE),2)
+
+SS.SR2.p = round(pwc.R2 %>% filter(contrast == "SS / SR2") %>% pull(p.value),4)
+SS.R2R2.p = round(pwc.R2 %>% filter(contrast == "SS / R2R2") %>% pull(p.value),4)
+SR2.R2R2.p = round(pwc.R2 %>% filter(contrast == "SR2 / R2R2") %>% pull(p.value),4)
+```
+
+```{r}
+# Define the bootstrap function for R2
+bootstrap_function.R2 = function(data, indices) {
+  sample_data = data[indices, ]  # Resample data
+  model = glm(cbind(Emerge, Not_Emerge) ~ Genotype, data = sample_data, family = "binomial")
+  coefficients = coef(model)
+  
+  b0 = coefficients["(Intercept)"]
+  b1 = coefficients["GenotypeSR2"]
+  b2 = coefficients["GenotypeR2R2"]
+  
+  # Transform logit values to probabilities
+  proportion_SS = exp(b0) / (1 + exp(b0))
+  proportion_SR2 = exp(b0 + b1) / (1 + exp(b0 + b1))
+  proportion_R2R2 = exp(b0 + b2) / (1 + exp(b0 + b2))
+  
+  # Calculate additivity
+  deviation_from_additivity = proportion_SR2 - (proportion_SS + proportion_R2R2) / 2
+  
+  # Calculate selection coefficient
+  selection_coefficient = (proportion_R2R2 - proportion_SS) / proportion_SS
+  
+  # Calculate dominance coefficient
+  dominance_coefficient = (proportion_SR2 - proportion_SS) / (proportion_R2R2 - proportion_SS)
+  
+  return(c(additivity = deviation_from_additivity, selection = selection_coefficient, dominance = dominance_coefficient))
+}
+
+# Set seed for reproducibility
+set.seed(123)
+
+bootstraps = 1000 
+
+# Perform bootstrap with 1000 replicates
+results.R2 = boot(data = data.viability.R2, statistic = bootstrap_function.R2, R = bootstraps)
+
+# Bootstrap values
+deviation_additivity.R2 = results.R2$t0[1]
+selection.R2 = results.R2$t0[2]
+dominance.R2 = results.R2$t0[3]
+
+# Extract bootstrap replicates (bootstrapped statistics)
+boot_estimates = results.R2$t  # This extracts all the bootstrap replicates
+
+# Calculate standard errors for each statistic
+se_additivity_R2 = sd(boot_estimates[, 1])  # For additivity
+se_selection_R2 = sd(boot_estimates[, 2])   # For selection coefficient
+se_dominance_R2 = sd(boot_estimates[, 3])   # For dominance coefficient
+
+# Compute confidence intervals
+deviation_additivity_ci.R2 = boot.ci(boot.out = results.R2, type = "perc", index = 1)  # Deviation from additivity
+selection_ci.R2 = boot.ci(boot.out = results.R2, type = "perc", index = 2)  # Selection coefficient
+dominance_ci.R2 = boot.ci(boot.out = results.R2, type = "perc", index = 3)  # Dominance coefficient
+
+# Extract CI values
+deviation_additivity_ci.R2.lower_ci = round(deviation_additivity_ci.R2$percent[4],2)  # Lower limit
+deviation_additivity_ci.R2.upper_ci = round(deviation_additivity_ci.R2$percent[5],2)  # Upper limit
+
+selection_ci.R2.lower_ci = round(selection_ci.R2$percent[4],2)  # Lower limit
+selection_ci.R2.upper_ci = round(selection_ci.R2$percent[5],2)  # Upper limit
+
+dominance_ci.R2.lower_ci = round(dominance_ci.R2$percent[4],2)  # Lower limit
+dominance_ci.R2.upper_ci = round(dominance_ci.R2$percent[5],2)  # Upper limit
+
+# Compute p-values for each statistic
+pvalue_additivity.R2 = round(boot.pval(results.R2, index = 1, type = "perc", theta_null = 0),4)  # p-value for deviation from additivity
+pvalue_selection.R2 = round(boot.pval(results.R2, index = 2, type = "perc", theta_null = 0),4)   # p-value for selection coefficient
+pvalue_dominance.R2 = round(boot.pval(results.R2, index = 3, type = "perc", theta_null = 0.5),4)   # p-value for dominance coefficient
+```
+
+### 2.3 Ace R3 genotype
+
+```{r}
+# Data R3 
+data.viability.R3 = data.viability %>% 
+  # Filter data for Genotypes SS, SR3, and R3R3
+  filter(Genotype %in% c("SS", "SR3", "R3R3")) %>%
+  # Level data so the SS is the reference
+  mutate(Genotype = factor(Genotype, levels = c("SS","SR3", "R3R3")))
+  
+# Fit logistic binomial model
+model.R3 = glm(cbind(Emerge, Not_Emerge) ~ Genotype, data = data.viability.R3, family = "binomial")
+  
+# Calculate estimated marginal means for the Genotype on the response scale (probability) - otherwise the model gives logit values
+emmeans(model.R3, ~ Genotype, type = "response")
+
+# Extract values for table
+emm.R3 = tidy(emmeans(model.R3, ~ Genotype, type = "response"))
+
+SS.mean = round(emm.R3 %>% filter(Genotype == "SS") %>% pull(prob),2)
+SR3.mean = round(emm.R3 %>% filter(Genotype == "SR3") %>% pull(prob),2)
+R3R3.mean = round(emm.R3 %>% filter(Genotype == "R3R3") %>% pull(prob),2)
+
+SS.se = round(emm.R3 %>% filter(Genotype == "SS") %>% pull(std.error),2)
+SR3.se = round(emm.R3 %>% filter(Genotype == "SR3") %>% pull(std.error),2)
+R3R3.se = round(emm.R3 %>% filter(Genotype == "R3R3") %>% pull(std.error),2)
+
+# Perform pairwise comparisons
+pairwise_comparisons.R3 = pairs(emmeans(model.R3, ~ Genotype, type = "response"))
+  
+# Adjusting for multiple comparisons using FDR (Benjamini-Hochberg)
+pwc.R3 = summary(pairwise_comparisons.R3, adjust = "BH")
+  
+SS.SR3 = round(pwc.R3 %>% filter(contrast == "SS / SR3") %>% pull(odds.ratio),2)
+SS.R3R3 = round(pwc.R3 %>% filter(contrast == "SS / R3R3") %>% pull(odds.ratio),2)
+SR3.R3R3 = round(pwc.R3 %>% filter(contrast == "SR3 / R3R3") %>% pull(odds.ratio),2)
+
+SS.SR3.se = round(pwc.R3 %>% filter(contrast == "SS / SR3") %>% pull(SE),2)
+SS.R3R3.se = round(pwc.R3 %>% filter(contrast == "SS / R3R3") %>% pull(SE),2)
+SR3.R3R3.se = round(pwc.R3 %>% filter(contrast == "SR3 / R3R3") %>% pull(SE),2)
+
+SS.SR3.p = round(pwc.R3 %>% filter(contrast == "SS / SR3") %>% pull(p.value),4)
+SS.R3R3.p = round(pwc.R3 %>% filter(contrast == "SS / R3R3") %>% pull(p.value),4)
+SR3.R3R3.p = round(pwc.R3 %>% filter(contrast == "SR3 / R3R3") %>% pull(p.value),4)
+```
+
+```{r}
+# Define the bootstrap function for R3
+bootstrap_function.R3 = function(data, indices) {
+  sample_data = data[indices, ]  # Resample data
+  model = glm(cbind(Emerge, Not_Emerge) ~ Genotype, data = sample_data, family = "binomial")
+  coefficients = coef(model)
+  
+  b0 = coefficients["(Intercept)"]
+  b1 = coefficients["GenotypeSR3"]
+  b2 = coefficients["GenotypeR3R3"]
+  
+  # Transform logit values to probabilities
+  proportion_SS = exp(b0) / (1 + exp(b0))
+  proportion_SR3 = exp(b0 + b1) / (1 + exp(b0 + b1))
+  proportion_R3R3 = exp(b0 + b2) / (1 + exp(b0 + b2))
+  
+  # Calculate additivity
+  deviation_from_additivity = proportion_SR3 - (proportion_SS + proportion_R3R3) / 2
+  
+  # Calculate selection coefficient
+  selection_coefficient = (proportion_R3R3 - proportion_SS) / proportion_SS
+  
+  # Calculate dominance coefficient
+  dominance_coefficient = (proportion_SR3 - proportion_SS) / (proportion_R3R3 - proportion_SS)
+  
+  return(c(additivity = deviation_from_additivity, selection = selection_coefficient, dominance = dominance_coefficient))
+}
+
+# Set seed for reproducibility
+set.seed(123)
+
+bootstraps = 1000 
+
+# Perform bootstrap with 1000 replicates
+results.R3 = boot(data = data.viability.R3, statistic = bootstrap_function.R3, R = bootstraps)
+
+# Bootstrap values
+deviation_additivity.R3 = results.R3$t0[1]
+selection.R3 = results.R3$t0[2]
+dominance.R3 = results.R3$t0[3]
+
+# Extract bootstrap replicates (bootstrapped statistics)
+boot_estimates = results.R3$t  # This extracts all the bootstrap replicates
+
+# Calculate standard errors for each statistic
+se_additivity_R3 = sd(boot_estimates[, 1])  # For additivity
+se_selection_R3 = sd(boot_estimates[, 2])   # For selection coefficient
+se_dominance_R3 = sd(boot_estimates[, 3])   # For dominance coefficient
+
+# Compute confidence intervals
+deviation_additivity_ci.R3 = boot.ci(boot.out = results.R3, type = "perc", index = 1)  # Deviation from additivity
+selection_ci.R3 = boot.ci(boot.out = results.R3, type = "perc", index = 2)  # Selection coefficient
+dominance_ci.R3 = boot.ci(boot.out = results.R3, type = "perc", index = 3)  # Dominance coefficient
+
+# Extract CI values
+deviation_additivity_ci.R3.lower_ci = round(deviation_additivity_ci.R3$percent[4],2)  # Lower limit
+deviation_additivity_ci.R3.upper_ci = round(deviation_additivity_ci.R3$percent[5],2)  # Upper limit
+
+selection_ci.R3.lower_ci = round(selection_ci.R3$percent[4],2)  # Lower limit
+selection_ci.R3.upper_ci = round(selection_ci.R3$percent[5],2)  # Upper limit
+
+dominance_ci.R3.lower_ci = round(dominance_ci.R3$percent[4],2)  # Lower limit
+dominance_ci.R3.upper_ci = round(dominance_ci.R3$percent[5],2)  # Upper limit
+
+# Compute p-values for each statistic
+pvalue_additivity.R3 = round(boot.pval(results.R3, index = 1, type = "perc", theta_null = 0),4)  # p-value for deviation from additivity
+pvalue_selection.R3 = round(boot.pval(results.R3, index = 2, type = "perc", theta_null = 0),4)   # p-value for selection coefficient
+pvalue_dominance.R3 = round(boot.pval(results.R3, index = 3, type = "perc", theta_null = 0.5),4)   # p-value for dominance coefficient
+```
+
+# 3. Table with statistics
+
+```{r}
+library(kableExtra)
+library(htmltools)
+source("./StatTable.R") # table for statistics
+```
+
+### 3.1 Ace R1 genotype
+
+```{r}
+# Call StatTable for model.R1
+StatTable(model = model.R1, 
+          directory = "./tables/", 
+          display_title = "Effect of genotype (SS, SR1, R1R1) on viability",  # Title for the table
+          save_title = "Viability.R1",  # Title for the saved file
+           pred_labels = c("Intercept","SR1", "R1R1"), # replace with your labels
+          dv_labels = "Genotype")
+
+# dataframe with estimates
+table.R1 = data.frame(
+  Parameter = c("SS mean", "SR1 mean", "R1R1 mean", 
+                "SS vs. SR1", "SS vs. R1R1", "SR1 vs. R1R1", 
+                "SR1 - (SS + R1R1)/2 (additivity)", 
+                "(R1R1 - SS) / R1R1 (selection, s)", "(SR1 - SS) / (R1R1 - SS) (dominance, h)"), 
+  Viability = c(SS.mean, SR1.mean, R1R1.mean, 
+                SS.SR1, SS.R1R1, SR1.R1R1, 
+                deviation_additivity.R1, selection.R1, dominance.R1), 
+  Std.Error = c(SS.se, SR1.se, R1R1.se, 
+                SS.SR1.se, SS.R1R1.se, SR1.R1R1.se, 
+                se_additivity_R1, se_selection_R1, se_dominance_R1),
+  Lower.CI = c("-", "-", "-", "-", "-", "-",
+                deviation_additivity_ci.R1.lower_ci,
+                selection_ci.R1.lower_ci,
+                dominance_ci.R1.lower_ci),
+  Upper.CI = c("-", "-", "-", "-", "-", "-",
+                 deviation_additivity_ci.R1.upper_ci,
+                 selection_ci.R1.upper_ci,
+                 dominance_ci.R1.upper_ci),
+  P.value = c("-", "-", "-", SS.SR1.p, "<.0001", SR1.R1R1.p, 
+         pvalue_additivity.R1, pvalue_selection.R1, pvalue_dominance.R1)
+)
+
+# Format the columns
+table.R1$Viability = formatC(table.R1$Viability, format = "f", digits = 2)
+table.R1$Std.Error = formatC(table.R1$Std.Error, format = "f", digits = 2)
+table.R1$Lower.CI = formatC(table.R1$Lower.CI, format = "f", digits = 2)
+table.R1$Upper.CI = formatC(table.R1$Upper.CI, format = "f", digits = 2)
+table.R1$P.value = formatC(table.R1$P.value, format = "e", digits = 4)  # 4 decimals for p-values
+
+
+table.R1.kable = kable(x = table.R1, digits = 4, align = 'l',
+                             caption = "<b>Effect estimates from logistic model analysis for viability</b>") %>%
+                       kable_classic(full_width = TRUE, html_font = "Times New Roman", font_size = 16) %>%
+                       kable_styling(latex_options = c("striped", "hold_position"), position = "center") %>%
+                       row_spec(0, bold = TRUE, font_size = 16) %>%  # Make header bold and set font size
+                       row_spec(1:nrow(table.R1), font_size = 16)  # Smaller font for values
+
+table.R1.kable
+```
+
+### 3.2 Ace R2 genotype
+
+```{r}
+# Call StatTable for model.R2
+StatTable(model = model.R2, 
+          directory = "./tables/", 
+          display_title = "Effect of genotype (SS, SR2, R2R2) on viability",  # Title for the table
+          save_title = "Viability.R2",  # Title for the saved file
+          pred_labels = c("Intercept","SR2", "R2R2"), # replace with your labels
+          dv_labels = "Genotype")
+
+# dataframe with estimates
+table.R2 = data.frame(
+  Parameter = c("SS mean", "SR2 mean", "R2R2 mean", 
+                "SS vs. SR2", "SS vs. R2R2", "SR2 vs. R2R2", 
+                "SR2 - (SS + R2R2)/2 (additivity)", 
+                "(R2R2 - SS) / R2R2 (selection, s)", "(SR2 - SS) / (R2R2 - SS) (dominance, h)"), 
+  Viability = c(SS.mean, SR2.mean, R2R2.mean, 
+                SS.SR2, SS.R2R2, SR2.R2R2, 
+                deviation_additivity.R2, selection.R2, dominance.R2), 
+  Std.Error = c(SS.se, SR2.se, R2R2.se, 
+                SS.SR2.se, SS.R2R2.se, SR2.R2R2.se, 
+                se_additivity_R2, se_selection_R2, se_dominance_R2),
+  Lower.CI = c("-", "-", "-", "-", "-", "-",
+               deviation_additivity_ci.R2.lower_ci,
+               selection_ci.R2.lower_ci,
+               dominance_ci.R2.lower_ci),
+  Upper.CI = c("-", "-", "-", "-", "-", "-",
+               deviation_additivity_ci.R2.upper_ci,
+               selection_ci.R2.upper_ci,
+               dominance_ci.R2.upper_ci),
+  P.value = c("-", "-", "-", SS.SR2.p, "<.0001", "<.0001", 
+              pvalue_additivity.R2, pvalue_selection.R2, pvalue_dominance.R2)
+)
+
+# Format the columns
+table.R2$Viability = formatC(table.R2$Viability, format = "f", digits = 2)
+table.R2$Std.Error = formatC(table.R2$Std.Error, format = "f", digits = 2)
+table.R2$Lower.CI = formatC(table.R2$Lower.CI, format = "f", digits = 2)
+table.R2$Upper.CI = formatC(table.R2$Upper.CI, format = "f", digits = 2)
+table.R2$P.value = formatC(table.R2$P.value, format = "e", digits = 4)  # 4 decimals for p-values
+
+table.R2.kable = kable(x = table.R2, digits = 4, align = 'l',
+                             caption = "<b>Effect estimates from logistic model analysis for viability</b>") %>%
+                       kable_classic(full_width = TRUE, html_font = "Times New Roman", font_size = 16) %>%
+                       kable_styling(latex_options = c("striped", "hold_position"), position = "center") %>%
+                       row_spec(0, bold = TRUE, font_size = 16) %>%  # Make header bold and set font size
+                       row_spec(1:nrow(table.R2), font_size = 16)  # Smaller font for values
+
+table.R2.kable
+```
+
+### 3.3 Ace R3 genotype
+
+```{r}
+# Call StatTable for model.R3
+StatTable(model = model.R3, 
+          directory = "./tables/", 
+          display_title = "Effect of genotype (SS, SR3, R3R3) on viability",  # Title for the table
+          save_title = "Viability.R3",  # Title for the saved file
+          pred_labels = c("Intercept","SR3", "R3R3"), # replace with your labels
+          dv_labels = "Genotype")
+
+# dataframe with estimates
+table.R3 = data.frame(
+  Parameter = c("SS mean", "SR3 mean", "R3R3 mean", 
+                "SS vs. SR3", "SS vs. R3R3", "SR3 vs. R3R3", 
+                "SR3 - (SS + R3R3)/2 (additivity)", 
+                "(R3R3 - SS) / R3R3 (selection, s)", "(SR3 - SS) / (R3R3 - SS) (dominance, h)"), 
+  Viability = c(SS.mean, SR3.mean, R3R3.mean, 
+                SS.SR3, SS.R3R3, SR3.R3R3, 
+                deviation_additivity.R3, selection.R3, dominance.R3), 
+  Std.Error = c(SS.se, SR3.se, R3R3.se, 
+                SS.SR3.se, SS.R3R3.se, SR3.R3R3.se, 
+                se_additivity_R3, se_selection_R3, se_dominance_R3),
+  Lower.CI = c("-", "-", "-", "-", "-", "-",
+               deviation_additivity_ci.R3.lower_ci,
+               selection_ci.R3.lower_ci,
+               dominance_ci.R3.lower_ci),
+  Upper.CI = c("-", "-", "-", "-", "-", "-",
+               deviation_additivity_ci.R3.upper_ci,
+               selection_ci.R3.upper_ci,
+               dominance_ci.R3.upper_ci),
+  P.value = c("-", "-", "-", SS.SR3.p, "<.0001", SR3.R3R3.p, 
+              pvalue_additivity.R3, pvalue_selection.R3, pvalue_dominance.R3)
+)
+
+# Format the columns
+table.R3$Viability = formatC(table.R3$Viability, format = "f", digits = 2)
+table.R3$Std.Error = formatC(table.R3$Std.Error, format = "f", digits = 2)
+table.R3$Lower.CI = formatC(table.R3$Lower.CI, format = "f", digits = 2)
+table.R3$Upper.CI = formatC(table.R3$Upper.CI, format = "f", digits = 2)
+table.R3$P.value = formatC(table.R3$P.value, format = "e", digits = 4)  # 4 decimals for p-values
+
+table.R3.kable = kable(x = table.R3, digits = 4, align = 'l',
+                             caption = "<b> Effect estimates from logistic model analysis for viability</b>") %>%
+                       kable_classic(full_width = TRUE, html_font = "Times New Roman", font_size = 16) %>%
+                       kable_styling(latex_options = c("striped", "hold_position"), position = "center") %>%
+                       row_spec(0, bold = TRUE, font_size = 16) %>%  # Make header bold and set font size
+                       row_spec(1:nrow(table.R3), font_size = 16)  # Smaller font for values
+
+table.R3.kable
+```
+
+## 3.4 R1+R2+R3 Table
+
+```{r}
+# remove first row in table 2 and table 3 because it is the same with table 1
+table.R1.R2.R3 = rbind(table.R1, table.R2 %>% slice(-1), table.R3 %>% slice(-1))
+
+# Use kable to create the table
+table.R1.R2.R3.kable = table.R1.R2.R3 %>%
+  kbl(caption = "Effect estimates from logistic model analysis for viability") %>%
+  kable_classic(full_width = TRUE, html_font = "Arial") 
+   
+table.R1.R2.R3.kable
+
+# Save the table as an HTML file
+save_kable(table.R1.R2.R3.kable, file = "./tables/table_viability.html")
+
+# Use webshot to convert HTML to PDF
+webshot("./tables/table_viability.html", file = "./tables/table_viability.pdf")
+```
+
+## 3.5 Data for simulations
+
+```{r}
+table.viability = rbind (table.R1, table.R2, table.R3) %>%
+  
+  filter(Parameter == c("SS mean", "SR1 mean", "R1R1 mean", "SR2 mean", "R2R2 mean", "SR3 mean", "R3R3 mean")) %>%
+  
+  dplyr::select(Parameter, Viability)
+
+write_csv(table.viability, "./data/model.viability.0ppm.csv")
+```
+
+# 4. Plots
+
+### 4.1 Ace R1 genotype
+
+```{r}
+genotype_labels = c("SS","SR1","R1R1")
+
+# Define the custom colors for each genotype
+#genotype_colors = c("#30a4bc", "#30a4bc", "#ffce1b")
+genotype_colors = c("#165094", "#7396BF","#ce8e58")
+
+# Define the shapes for each genotype
+genotype_shapes = c(16, 15, 17)
+
+
+
+R1_viability = ggplot() +
+  
+  annotate("segment", x = 1, xend = 3, y = 89.4, yend = 76.4, colour = "#ce8e58", size=0.5, alpha=0.5) +
+  
+ 
+  # This plots individual values for each genotype
+  geom_jitter(data = data.viability %>% filter(Genotype %in% c("SS", "SR1", "R1R1")),
+             aes(x=Genotype, y = Survival, color = Genotype, shape = Genotype), size = 4, alpha = 0.4, width = 0.1) +
+  
+   # add a line for SS mean
+  geom_hline(yintercept = 89.4, color = "black", linetype = "solid", size = 0.25) +
+  
+  # This plots the mean viability for each genotype
+  geom_point(data = data.viability.summary %>% filter(Genotype %in% c("SS","SR1", "R1R1")),
+              aes(x=Genotype, y = mean, color = Genotype, shape = Genotype), size = 8, alpha = 1) +
+  
+  # This plots the mean and standard error for each genotype
+  geom_errorbar(data = data.viability.summary %>% filter(Genotype %in% c("SS", "SR1", "R1R1")),
+                aes(x=Genotype, ymin = mean - se, ymax = mean + se, color = Genotype), width = 0) +
+  
+
+  # Map the colors to the genotypes
+  scale_color_manual(values = genotype_colors) +
+  
+  # Map the shapes to the genotypes
+  scale_shape_manual(values = genotype_shapes) +
+  
+  # Add the s and h coefficients for R1
+  geom_text(aes(x = 1.2, y = 120, 
+                label = "s = -0.15 +/-0.03*** \nh = 0.29 +/-0.2"), 
+            size = 8, hjust = 0, vjust = 1) +
+  
+  
+  scale_y_continuous(breaks = seq(40, 120, 10), 
+                     limits = c(40, 120)) +
+  
+  scale_x_discrete(labels = genotype_labels) +
+  
+  labs(x = "", y = "Viability (%)") +
+  
+  
+  theme_classic() +
+  
+  theme(
+     panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+ #   panel.background= element_rect(color ="#FCCC1A", size = 2),
+    
+    # Increase the size of the axis titles
+    axis.title.y = element_text(size = 24),
+
+    # Increase the size of the axis tick labels
+    axis.text.x = element_text(size = 22),
+    axis.text.y = element_text(size = 20),
+ 
+    # No legend
+    legend.position = "none")
+    
+  
+
+R1_viability
+
+ggsave("./plots/R1_viability.png",R1_viability, width = 5 , height = 5)
+```
+
+### 4.2 Ace R2 genotype
+
+```{r}
+genotype_labels = c("SS","SR2","R2R2")
+
+# Define the custom colors for each genotype
+#genotype_colors = c("#30a4bc", "#30a4bc", "#ec4176")
+genotype_colors = c("#165094", "#165094","#e1615e")
+
+
+# Define the shapes for each genotype
+genotype_shapes = c(16, 15, 17)
+
+
+R2_viability = ggplot() +
+  
+  annotate("segment", x = 1, xend = 3, y = 89.4, yend = 74.0, colour = "#e1615e", size=0.5, alpha=0.5) +
+  
+ 
+  # This plots individual values for each genotype
+  geom_jitter(data = data.viability %>% filter(Genotype %in% c("SS", "SR2", "R2R2")),
+             aes(x=Genotype, y = Survival, color = Genotype, shape = Genotype), size = 4, alpha = 0.4, width = 0.1) +
+  
+   # add a line for SS mean
+  geom_hline(yintercept = 89.4, color = "black", linetype = "solid", size = 0.25) +
+  
+  # This plots the mean viability for each genotype
+  geom_point(data = data.viability.summary %>% filter(Genotype %in% c("SS","SR2", "R2R2")),
+              aes(x=Genotype, y = mean, color = Genotype, shape = Genotype), size = 8, alpha = 1) +
+  
+  # This plots the mean and standard error for each genotype
+  geom_errorbar(data = data.viability.summary %>% filter(Genotype %in% c("SS", "SR2", "R2R2")),
+                aes(x=Genotype, ymin = mean - se, ymax = mean + se, color = Genotype), width = 0) +
+  
+
+  # Map the colors to the genotypes
+  scale_color_manual(values = genotype_colors) +
+  
+  # Map the shapes to the genotypes
+  scale_shape_manual(values = genotype_shapes) +
+  
+  # Add the s and h coefficients for R2
+  geom_text(aes(x = 1.2, y = 120, 
+                label = "s = -0.17 +/-0.05*** \nh = 0.17 +/-0.15*"), 
+            size = 8, hjust = 0, vjust = 1) +
+  
+  
+  scale_y_continuous(breaks = seq(40, 120, 10), 
+                     limits = c(40, 120)) +
+  
+  scale_x_discrete(labels = genotype_labels) +
+  
+  labs(x = "", y = "Viability (%)") +
+  
+  
+  theme_classic() +
+  
+  theme(
+     panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+ #   panel.background= element_rect(color ="#FCCC1A", size = 2),
+    
+    # Increase the size of the axis titles
+    axis.title.y = element_text(size = 24),
+
+    # Increase the size of the axis tick labels
+    axis.text.x = element_text(size = 22),
+    axis.text.y = element_text(size = 20),
+ 
+    # No legend
+    legend.position = "none")
+    
+  
+
+R2_viability
+
+ggsave("./plots/R2_viability.png",R2_viability, width = 5, height = 5)
+```
+
+### 4.3 Ace R3 genotype
+
+```{r}
+
+genotype_labels = c("SS","SR3","R3R3")
+
+# Define the custom colors for each genotype
+#genotype_colors = c("#30a4bc", "#97D1DD",  "#782e6e")
+genotype_colors = c("#165094", "#165094", "#702771")
+
+# Define the shapes for each genotype
+genotype_shapes = c(16, 15, 17)
+
+
+R3_viability = ggplot() +
+  
+  annotate("segment", x = 1, xend = 3, y = 89.4, yend = 77.6, colour = "#782e6e", size=0.5, alpha=0.5) +
+  
+ 
+  # This plots individual values for each genotype
+  geom_jitter(data = data.viability %>% filter(Genotype %in% c("SS", "SR3", "R3R3")),
+             aes(x=Genotype, y = Survival, color = Genotype, shape = Genotype), size = 4, alpha = 0.4, width = 0.1) +
+  
+   # add a line for SS mean
+  geom_hline(yintercept = 89.4, color = "black", linetype = "solid", size = 0.25) +
+  
+  # This plots the mean viability for each genotype
+  geom_point(data = data.viability.summary %>% filter(Genotype %in% c("SS","SR3", "R3R3")),
+              aes(x=Genotype, y = mean, color = Genotype, shape = Genotype), size = 8, alpha = 1) +
+  
+  # This plots the mean and standard error for each genotype
+  geom_errorbar(data = data.viability.summary %>% filter(Genotype %in% c("SS", "SR3", "R3R3")),
+                aes(x=Genotype, ymin = mean - se, ymax = mean + se, color = Genotype), width = 0) +
+  
+
+  # Map the colors to the genotypes
+  scale_color_manual(values = genotype_colors) +
+  
+  # Map the shapes to the genotypes
+  scale_shape_manual(values = genotype_shapes) +
+  
+  # Add the s and h coefficients for R2
+  geom_text(aes(x = 1.2, y = 120, 
+                label = "s = -0.13 +/-0.02*** \nh = 0.32 +/-0.19"), 
+            size = 8, hjust = 0, vjust = 1) +
+  
+  
+  scale_y_continuous(breaks = seq(40, 120, 10), 
+                     limits = c(40, 120)) +
+  
+  scale_x_discrete(labels = genotype_labels) +
+  
+  labs(x = "", y = "Viability (%)") +
+  
+  
+  theme_classic() +
+  
+  theme(
+     panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+ #   panel.background= element_rect(color ="#FCCC1A", size = 2),
+    
+    # Increase the size of the axis titles
+    axis.title.y = element_text(size = 24),
+
+    # Increase the size of the axis tick labels
+    axis.text.x = element_text(size = 22),
+    axis.text.y = element_text(size = 20),
+ 
+    # No legend
+    legend.position = "none")
+    
+  
+
+R3_viability
+
+ggsave("./plots/R3_viability.png",R3_viability, width = 5 , height = 5)
+```
+
+# 4. References
+
+1.  Tutorial for 1-Way ANOVAL:
+
+    <https://www.datanovia.com/en/lessons/anova-in-r/#post-hoc-tests>
+
+    <https://whitlockschluter3e.zoology.ubc.ca/Tutorials%20using%20R/R_tutorial_Normal_and_sample_means.html>
+
+2.  Regression with categorical variable:
+
+    <https://www.youtube.com/watch?v=9yTui_LoSOc>
+
+    <http://www.sthda.com/english/articles/40-regression-analysis/163-regression-with-categorical-variables-dummy-coding-essentials-in-r/>

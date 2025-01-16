@@ -1,0 +1,168 @@
+---
+title: "Beneficial Dominance Reversal_Cartoon"
+author: "Marianna Karageorgi"
+date: "2024-08-31"
+output: html_document
+---
+
+- If the fitness of the heterozygote is the same as the homozygote sensitive, the resistant allele is recessive.
+- If the fitness of the heterozygote is the average of the sensitive and resistant homozygotes, the resistant allele is additive.
+- If the fitness of the heterozygote is the same as the homozygote resistant, the resistant allele is dominant.
+
+
+### Dummy Data 
+```{r}
+library(tidyverse)
+```
+
+```{r}
+## R beneficial
+data.Rdom = tibble(
+  Genotype = factor(c("SS", "SR","SR","SR", "RR"), levels = c("SS", "SR","RR")),
+  Dominance = c("recessive", "recessive","additive", "dominant", "dominant"),
+  Trait.1 = c(0, 0.1,0.5,0.9, 1)
+)
+
+## R deleterious
+data.Sdom = tibble(
+  Genotype = factor(c("SS", "SR","SR","SR", "RR"), levels = c("SS", "SR","RR")),
+  Dominance = c("recessive", "recessive","additive", "dominant", "dominant"),
+  Trait.2 = c(1, 0.9,0.5,0.1, 0)
+)
+```
+
+
+# Plot
+```{r}
+library("ggpubr")
+
+genotype_labels = c("SS","SR","RR")
+
+
+
+# Define  colors for each dominance category
+dominance_colors = c("recessive" = "#165094", "additive" = "#FCC876", "dominant" = "#faa41a")
+
+# Define the shapes for each genotype
+genotype_shapes = c(16, 15, 17)
+
+# Define text labels for the SR group based on their dominance
+labels = c("recessive", "additive", "dominant")
+
+
+# Plot
+Rdom = ggplot() +
+  
+  annotate("segment", x = 1, xend = 3, y = 0, yend = 1, colour = "#faa41a", size=0.5, alpha=0.5) +
+  
+  # add a line for SS 
+  geom_hline(yintercept = 0, color = "black", linetype = "solid", size = 0.5) +
+  
+  # This plots data points
+  geom_point(data = data.Rdom, 
+             aes(x = Genotype, y = Trait.1, color = Dominance, shape = Genotype),
+             size = 8, alpha = 1) +
+  
+  geom_text(data = data.Rdom %>% filter(Genotype == "SR"), 
+            aes(x = Genotype, y = Trait.1, label = Dominance, color = Dominance), 
+            vjust = 0.3, hjust = 1.2, size = 8, check_overlap = TRUE) +
+  
+  # Map the colors to dominance
+  scale_color_manual(values = dominance_colors) +
+  
+  # Map the shapes to genotypes
+  scale_shape_manual(values = genotype_shapes) +
+  
+   scale_y_continuous(limits = c(-0.1,1.1)) +
+  
+  scale_x_discrete(labels = genotype_labels) +
+  
+  labs(x = "", y = "Phenotypic value") +
+  
+  theme_classic() +
+  
+  theme(
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+    
+    axis.title.y = element_text(size = 24),
+    axis.text.x = element_text(size = 22),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    legend.position = "no",
+    plot.title = element_text(hjust = 0.5, size = 18, face = "bold")
+  )
+
+Rdom
+
+# Save the plot
+ggsave("./plots/Rdom.png",Rdom,  width = 5 , height = 5)
+```
+
+
+```{r}
+library("ggpubr")
+
+genotype_labels = c("SS","SR","RR")
+
+
+
+# Define  colors for each dominance category
+dominance_colors = c("recessive" = "#165094", "additive" =  "#7396BF", "dominant" = "#faa41a")
+
+# Define the shapes for each genotype
+genotype_shapes = c(16, 15, 17)
+
+# Define text labels for the SR group based on their dominance
+labels = c("recessive", "additive", "dominant")
+
+
+# Plot
+Sdom = ggplot() +
+  
+  annotate("segment", x = 1, xend = 3, y = 1, yend = 0, colour = "#faa41a", size=0.5, alpha=0.5) +
+  
+  # add a line for SS 
+  geom_hline(yintercept = 1 , color = "black", linetype = "solid", size = 0.5) +
+  
+  # This plots data points
+  geom_point(data = data.Sdom, 
+             aes(x = Genotype, y = Trait.2, color = Dominance, shape = Genotype),
+             size = 8, alpha = 1) +
+  
+  
+  geom_text(data = data.Sdom %>% filter(Genotype == "SR"), 
+            aes(x = Genotype, y = Trait.2, label = Dominance, color = Dominance), 
+            vjust = 0.3, hjust = 1.2, size = 8, check_overlap = TRUE) +
+  
+  # Map the colors to dominance
+  scale_color_manual(values = dominance_colors) +
+  
+  # Map the shapes to genotypes
+  scale_shape_manual(values = genotype_shapes) +
+  
+   scale_y_continuous(limits = c(-0.1,1.1)) +
+  
+  scale_x_discrete(labels = genotype_labels) +
+  
+  labs(x = "", y = "Phenotypic value") +
+  
+  theme_classic() +
+  theme(
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+    
+    axis.title.y = element_text(size = 24),
+    axis.text.x = element_text(size = 22),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    legend.position = "no",
+    plot.title = element_text(hjust = 0.5, size = 18, face = "bold")
+  )
+
+Sdom
+
+# Save the plot
+ggsave("./plots/Sdom.png",Sdom,  width = 5 , height = 5)
+```
+

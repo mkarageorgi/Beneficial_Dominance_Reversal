@@ -1,0 +1,954 @@
+---
+title: "Comparison of Fecundity between Ace genotypes in the absence of malathion"
+author: "Marianna Karageorgi & Zach Mouza"
+date: "2023-09-06"
+output: 
+pdf_document: default
+---
+
+# 1. Data
+
+Experiment was conducted from July 17- 20, 2023.
+
+We introduced five 3-day-old females of each genotype in egg-laying bottles fitted with egg-laying caps filled with Drosophila growth media. Each day over a period of 3 days we counted the number of eggs laid. Each of the genotypes were tested in 8-10 replicate egg-laying bottles. The egg-laying caps were examined under a stereoscope where we counted the eggs laid each day over the 3-day period.
+
+The bottles were randomized and the experimenter, Anastasia Andreeva, was blind to the genotype in each bottle.
+
+### Data wrangling
+
+```{r}
+library(tidyverse)
+library(data.table)
+```
+
+```{r}
+fecundity_data = fread("./data/Fecundity_FINAL.csv")
+
+fecundity.data = fecundity_data %>%
+  mutate(eggs = rowSums(fecundity_data[, 5:7], na.rm = TRUE), 
+         Total = 50 ,
+         eggs_laid = eggs / Total * 100 ) %>%
+  filter(Nr_flies_Experiment_End == 5) %>%
+  dplyr::select(Genotype, eggs_laid) %>%
+  slice(-c(60, 63)) %>% # experimental error - wrong nr of flies in egg lay cages
+  mutate(Genotype = factor(Genotype, levels = c("SS", "SR1", "SR2", "SR3", "R1R1", "R2R2", "R3R3"))) # Convert Genotype to a factor
+
+```
+
+### Summary Statistics
+
+```{r}
+data.fecundity.summary = group_by(fecundity.data, Genotype) %>%
+  summarise(
+    count = n(),
+    mean = mean(eggs_laid, na.rm = TRUE),
+    sd = sd(eggs_laid, na.rm = TRUE),
+    se = sd / sqrt(8)
+  )
+```
+
+### Fecundity data: Exploratory Data Analysis
+
+```{r}
+
+# Define the custom colors for the palette
+genotype_colors = c("black", "#FCCC1A","#8601AF","#FE2712",  "#FCCC1A", "#8601AF",   "#FE2712")
+
+# Define the linetypes for the boxes
+linetypes = c(1, 2, 2, 2, 1, 1, 1)
+
+# Use the chosen colors and linetypes in your plot
+fecundity_plot = ggplot(fecundity.data, aes(Genotype, eggs_laid)) +
+  geom_boxplot(aes(linetype = Genotype, color = Genotype), fill = NA) +
+  geom_point(aes(color = Genotype)) +  # Add a color aesthetic here
+  scale_color_manual(values = genotype_colors) +  # Map the colors to the genotypes
+  scale_linetype_manual(values = linetypes) +
+  ylim(0, 350)+
+  labs(x = NULL, y = "Eggs Laid") +
+  theme_classic() +
+  theme(legend.position = "right") + 
+  
+  theme(legend.position = "none")
+```
+
+# 2. Statistics
+
+Analyze fecundity data for homozygous sensitive SS, homozygous resistant RR, and heterozygous SR genotypes for each resistant allele using linear regression model.
+
+The model is:
+
+eggs=b0​+b1​⋅SR+b2​⋅RR+ϵ
+
+The expected number of eggs for each genotype is represented:
+
+-   For SS (reference group): eggsSS​=b0​
+
+-   For SR: eggsSR=b0+b1
+
+-   For RR: eggsRR=b0+b2
+
+Perform post hoc pairwise t-tests (adjusted following Benjamini-Hochberg) to compare the genotypes.
+
+We also estimate additional parameters using coefficients from the linear model.
+
+**Additivity: Comparison between SR vs. (SS+RR)/2**
+
+Additivity is calculated as the difference between the SR genotype and the average of SS and RR genotypes. It can be compared to the expected value under additivity.
+
+-   Expected value under additivity:
+
+    SR- (SS+RR)/2 = b0+b1 - (b0+(b0+b2))/2 = b0+b1 - (2b0+b2)/2
+
+-   Use bootstrap methods to calculate confidence intervals for the additivity estimate
+
+-   Significance testing with two one-sided t-test: H0 = the estimate for additivity is 0. Ha1 = the estimate for dominance is higher than 0 Ha2 = the estimate for dominance is lower than 0.
+
+**Selection coefficient: Estimate ratio (RR - SS)/ SS**
+
+The selection coefficient is the ratio of the difference between RR and SS genotypes to the SS genotype. This parameter indicates how selection affects the fitness of the resistant genotype compared to the sensitive genotype.
+
+-   Estimate ratio (RR-SS)/SS = ((b0+b2)-b0)/b0=b2/b0
+
+-   Use bootstrap methods to calculate confidence intervals for the selection coefficient
+
+-   Significance testing with two-sided t-test: H0 = the estimate for selection equals to 0. Ha = the estimate for selection is different from 0.
+
+**Dominance coefficient: Estimate (SR−SS)/(RR−SS) (h)**
+
+The dominance coefficient measures the degree to which the heterozygous genotype (SR) exhibits fitness that is intermediate between the homozygous genotypes (SS and RR).
+
+-   Estimate ratio (SR-SS)/(RR-SS)= ((b0+b1)−b0)/((b0+b2)−b0)=b1/b2
+
+-   Use bootstrap methods to calculate confidence intervals for the dominance coefficient
+
+-   Significance testing with two one-sided t-test: H0 = the estimate for dominance is 0.5. Ha1 = the estimate for dominance is higher than 0.5. Ha2 = the estimate for dominance is lower than 0.5
+
+```{r}
+library(broom)
+library(multcomp) 
+library(emmeans)
+library(msm)
+library(boot)
+library(ggpubr)
+library(boot.pval)
+library(modelsummary)
+```
+
+### 2.1 Ace R1 genotype
+
+```{r}
+# Data R1
+fecundity.data.R1 = fecundity.data %>%
+  # Filter data 
+  filter(Genotype %in% c("SS", "SR1", "R1R1")) %>%
+  # Level data so the SS is the reference
+  mutate(Genotype = factor(Genotype, levels = c("SS", "SR1", "R1R1")))
+
+# Fit linear model
+model.R1 = lm(eggs_laid ~ Genotype, data = fecundity.data.R1)
+
+
+# Estimated Marginal Means
+emmeans(model.R1, ~ Genotype)
+
+# Extract values for table
+emm.R1 = tidy(emmeans(model.R1, ~ Genotype))
+
+SS.mean = round(emm.R1 %>% filter(Genotype == "SS") %>% pull(estimate),2)
+SR1.mean = round(emm.R1 %>% filter(Genotype == "SR1") %>% pull(estimate),2)
+R1R1.mean = round(emm.R1 %>% filter(Genotype == "R1R1") %>% pull(estimate),2)
+
+SS.se = round(emm.R1 %>% filter(Genotype == "SS") %>% pull(std.error),2)
+SR1.se = round(emm.R1 %>% filter(Genotype == "SR1") %>% pull(std.error),2)
+R1R1.se = round(emm.R1 %>% filter(Genotype == "R1R1") %>% pull(std.error),2)
+
+
+# Perform pairwise comparisons
+pairwise_comparisons.R1 = pairs(emmeans(model.R1, ~ Genotype))
+
+# Adjusting for multiple comparisons using FDR (Benjamini-Hochberg)
+pwc.R1 = summary(pairwise_comparisons.R1, adjust = "BH")
+
+SS.SR1 = round(pwc.R1 %>% filter(contrast == "SS - SR1") %>% pull(estimate),2)
+SS.R1R1 = round(pwc.R1 %>% filter(contrast == "SS - R1R1") %>% pull(estimate),2)
+SR1.R1R1 = round(pwc.R1 %>% filter(contrast == "SR1 - R1R1") %>% pull(estimate),2)
+
+SS.SR1.se = round(pwc.R1 %>% filter(contrast == "SS - SR1") %>% pull(SE),2)
+SS.R1R1.se = round(pwc.R1 %>% filter(contrast == "SS - R1R1") %>% pull(SE),2)
+SR1.R1R1.se = round(pwc.R1 %>% filter(contrast == "SR1 - R1R1") %>% pull(SE),2)
+
+SS.SR1.p = round(pwc.R1 %>% filter(contrast == "SS - SR1") %>% pull(p.value),2)
+SS.R1R1.p = round(pwc.R1 %>% filter(contrast == "SS - R1R1") %>% pull(p.value),2)
+SR1.R1R1.p = round(pwc.R1 %>% filter(contrast == "SR1 - R1R1") %>% pull(p.value),2)
+```
+
+**Bootstrapping to calculate confidence intervals**
+
+Define a function that will fit the linear model to a re-sampled dataset and compute the additivity, selection coefficient, and dominance coefficient and confidence intervals.
+
+```{r}
+# Define the bootstrap function
+bootstrap_function.R1 = function(data, indices) {
+  sample_data = data[indices, ]  # Resample data
+  model = lm(eggs_laid ~ Genotype, data = sample_data)
+  coefficients = coef(model)
+  
+  # Extract coefficients
+  b0 = coefficients["(Intercept)"]
+  b1 = coefficients["GenotypeSR1"]
+  b2 = coefficients["GenotypeR1R1"]
+  
+  # Calculate the observed value for SR
+  eggs_SR1 = b0 + b1
+  
+  # Calculate the expected additivity value: (SS + RR) / 2
+  expected_additivity = (b0 + b0 + b2) / 2
+  
+  # Calculate deviation from additivity: SR - (SS + RR) / 2
+  deviation_from_additivity = eggs_SR1 - expected_additivity
+  
+  # Calculate dominance coefficient: (SR - SS) / (RR - SS)
+  h = b1 / b2 
+  
+  # Calculate selection coefficient: (RR - SS) / SS
+  s = b2 / b0
+  
+  return(c(deviation_from_additivity = deviation_from_additivity, selection = s, dominance = h))
+}
+
+# Set seed for reproducibility
+set.seed(123) 
+
+bootstraps = 1000 
+
+# Perform bootstrap with 1000 replicates
+results.R1 = boot(data = fecundity.data.R1, statistic = bootstrap_function.R1, R = bootstraps)
+summary(results.R1)
+
+# bootstrap values
+deviation_additivity.R1 = as.numeric(results.R1$t0[1])
+selection.R1 = as.numeric(results.R1$t0[2])
+dominance.R1 = as.numeric(results.R1$t0[3])
+
+# Extract bootstrap replicates (bootstrapped statistics)
+boot_estimates = results.R1$t  # This extracts all the bootstrap replicates
+
+# Calculate standard errors for each statistic
+se_additivity_R1 = sd(boot_estimates[, 1])  # For additivity
+se_selection_R1 = sd(boot_estimates[, 2])   # For selection coefficient
+se_dominance_R1 = sd(boot_estimates[, 3])   # For dominance coefficient
+
+
+# Compute confidence intervals
+deviation_additivity_ci.R1 = boot.ci(boot.out = results.R1, type = "perc", index = 1)  # Deviation from additivity
+selection_ci.R1 = boot.ci(boot.out = results.R1, type = "perc", index = 2)  # Selection coefficient
+dominance_ci.R1 = boot.ci(boot.out = results.R1, type = "perc", index = 3)  # Dominance coefficient
+
+# extract CI values
+deviation_additivity_ci.R1.lower_ci = round(deviation_additivity_ci.R1$percent[4],2)  # Lower limit
+deviation_additivity_ci.R1.upper_ci = round(deviation_additivity_ci.R1$percent[5],2)  # Upper limit
+
+selection_ci.R1.lower_ci = round(selection_ci.R1$percent[4],2)  # Lower limit
+selection_ci.R1.upper_ci = round(selection_ci.R1$percent[5],2)  # Upper limit
+
+dominance_ci.R1.lower_ci = round(dominance_ci.R1$percent[4],2)  # Lower limit
+dominance_ci.R1.upper_ci = round(dominance_ci.R1$percent[5],2)  # Upper limit
+
+
+# Compute p-values for each statistic
+pvalue_additivity.R1 = round(boot.pval(results.R1, index = 1, type = "perc", theta_null = 0),4)  # p-value for deviation from additivity
+pvalue_selection.R1 = round(boot.pval(results.R1, index = 2, type = "perc", theta_null = 0),4)   # p-value for selection coefficient
+pvalue_dominance.R1 = round(boot.pval(results.R1, index = 3, type = "perc", theta_null = 0.5),4)   # p-value for dominance coefficient
+```
+
+### 2.2 Ace R2 genotype
+
+```{r}
+# Data R2
+fecundity.data.R2 = fecundity.data %>%
+  # Filter data 
+  filter(Genotype %in% c("SS", "SR2", "R2R2")) %>%
+  # Level data so the SS is the reference
+  mutate(Genotype = factor(Genotype, levels = c("SS", "SR2", "R2R2")))
+
+# Fit linear model
+model.R2 = lm(eggs_laid ~ Genotype, data = fecundity.data.R2)
+
+# Estimated Marginal Means
+emm.R2 = tidy(emmeans(model.R2, ~ Genotype))
+
+SS.mean = round(emm.R2 %>% filter(Genotype == "SS") %>% pull(estimate), 2)
+SR2.mean = round(emm.R2 %>% filter(Genotype == "SR2") %>% pull(estimate), 2)
+R2R2.mean = round(emm.R2 %>% filter(Genotype == "R2R2") %>% pull(estimate), 2)
+
+SS.se = round(emm.R2 %>% filter(Genotype == "SS") %>% pull(std.error), 2)
+SR2.se = round(emm.R2 %>% filter(Genotype == "SR2") %>% pull(std.error), 2)
+R2R2.se = round(emm.R2 %>% filter(Genotype == "R2R2") %>% pull(std.error), 2)
+
+# Perform pairwise comparisons
+pairwise_comparisons.R2 = pairs(emmeans(model.R2, ~ Genotype))
+
+# Adjusting for multiple comparisons using FDR (Benjamini-Hochberg)
+pwc.R2 = summary(pairwise_comparisons.R2, adjust = "BH")
+
+SS.SR2 = round(pwc.R2 %>% filter(contrast == "SS - SR2") %>% pull(estimate), 2)
+SS.R2R2 = round(pwc.R2 %>% filter(contrast == "SS - R2R2") %>% pull(estimate), 2)
+SR2.R2R2 = round(pwc.R2 %>% filter(contrast == "SR2 - R2R2") %>% pull(estimate), 2)
+
+SS.SR2.se = round(pwc.R2 %>% filter(contrast == "SS - SR2") %>% pull(SE), 2)
+SS.R2R2.se = round(pwc.R2 %>% filter(contrast == "SS - R2R2") %>% pull(SE), 2)
+SR2.R2R2.se = round(pwc.R2 %>% filter(contrast == "SR2 - R2R2") %>% pull(SE), 2)
+
+SS.SR2.p = round(pwc.R2 %>% filter(contrast == "SS - SR2") %>% pull(p.value), 2)
+SS.R2R2.p = round(pwc.R2 %>% filter(contrast == "SS - R2R2") %>% pull(p.value), 2)
+SR2.R2R2.p = round(pwc.R2 %>% filter(contrast == "SR2 - R2R2") %>% pull(p.value), 2)
+```
+
+**Bootstrapping to calculate confidence intervals**
+
+Define a function that will fit the linear model to a resampled dataset and compute the additivity, selection coefficient, and dominance coefficient and confidence intervals.
+
+```{r}
+# Define the bootstrap function
+bootstrap_function.R2 = function(data, indices) {
+  sample_data = data[indices, ]  # Resample data
+  model = lm(eggs_laid ~ Genotype, data = sample_data)
+  coefficients = coef(model)
+  
+  # Extract coefficients
+  b0 = coefficients["(Intercept)"]
+  b1 = coefficients["GenotypeSR2"]
+  b2 = coefficients["GenotypeR2R2"]
+  
+  # Calculate the observed value for SR
+  eggs_SR2 = b0 + b1
+  
+  # Calculate the expected additivity value: (SS + RR) / 2
+  expected_additivity = (b0 + b0 + b2) / 2
+  
+  # Calculate deviation from additivity: SR - (SS + RR) / 2
+  deviation_from_additivity = eggs_SR2 - expected_additivity
+  
+  # Calculate dominance coefficient: (SR - SS) / (RR - SS)
+  h = b1 / b2 
+  
+  # Calculate selection coefficient: (RR - SS) / SS
+  s = b2 / b0
+  
+  return(c(deviation_from_additivity = deviation_from_additivity, selection = s, dominance = h))
+}
+
+# Set seed for reproducibility
+set.seed(123) 
+
+bootstraps = 1000 
+
+# Perform bootstrap with 1000 replicates
+results.R2 = boot(data = fecundity.data.R2, statistic = bootstrap_function.R2, R = bootstraps)
+summary(results.R2)
+
+# Bootstrap values
+deviation_additivity.R2 = as.numeric(results.R2$t0[1])
+selection.R2 = as.numeric(results.R2$t0[2])
+dominance.R2 = as.numeric(results.R2$t0[3])
+
+# Extract bootstrap replicates (bootstrapped statistics)
+boot_estimates = results.R2$t  # This extracts all the bootstrap replicates
+
+# Calculate standard errors for each statistic
+se_additivity_R2 = sd(boot_estimates[, 1])  # For additivity
+se_selection_R2 = sd(boot_estimates[, 2])   # For selection coefficient
+se_dominance_R2 = sd(boot_estimates[, 3])   # For dominance coefficient
+
+# Compute confidence intervals
+deviation_additivity_ci.R2 = boot.ci(boot.out = results.R2, type = "perc", index = 1)  # Deviation from additivity
+selection_ci.R2 = boot.ci(boot.out = results.R2, type = "perc", index = 2)  # Selection coefficient
+dominance_ci.R2 = boot.ci(boot.out = results.R2, type = "perc", index = 3)  # Dominance coefficient
+
+# Extract CI values
+deviation_additivity_ci.R2.lower_ci = round(deviation_additivity_ci.R2$percent[4], 2)  # Lower limit
+deviation_additivity_ci.R2.upper_ci = round(deviation_additivity_ci.R2$percent[5], 2)  # Upper limit
+
+selection_ci.R2.lower_ci = round(selection_ci.R2$percent[4], 2)  # Lower limit
+selection_ci.R2.upper_ci = round(selection_ci.R2$percent[5], 2)  # Upper limit
+
+dominance_ci.R2.lower_ci = round(dominance_ci.R2$percent[4], 2)  # Lower limit
+dominance_ci.R2.upper_ci = round(dominance_ci.R2$percent[5], 2)  # Upper limit
+
+# Compute p-values for each statistic
+pvalue_additivity.R2 = round(boot.pval(results.R2, index = 1, type = "perc", theta_null = 0), 4)  # p-value for deviation from additivity
+pvalue_selection.R2 = round(boot.pval(results.R2, index = 2, type = "perc", theta_null = 0), 4)   # p-value for selection coefficient
+pvalue_dominance.R2 = round(boot.pval(results.R2, index = 3, type = "perc", theta_null = 0.5), 4)   # p-value for dominance coefficient
+```
+
+### 2.3 Ace R3 genotype
+
+```{r}
+# Data R3
+fecundity.data.R3 = fecundity.data %>%
+  # Filter data 
+  filter(Genotype %in% c("SS", "SR3", "R3R3")) %>%
+  # Level data so the SS is the reference
+  mutate(Genotype = factor(Genotype, levels = c("SS", "SR3", "R3R3")))
+
+# Fit linear model
+model.R3 = lm(eggs_laid ~ Genotype, data = fecundity.data.R3)
+
+# Estimated Marginal Means
+emm.R3 = tidy(emmeans(model.R3, ~ Genotype))
+
+SS.mean = round(emm.R3 %>% filter(Genotype == "SS") %>% pull(estimate), 2)
+SR3.mean = round(emm.R3 %>% filter(Genotype == "SR3") %>% pull(estimate), 2)
+R3R3.mean = round(emm.R3 %>% filter(Genotype == "R3R3") %>% pull(estimate), 2)
+
+SS.se = round(emm.R3 %>% filter(Genotype == "SS") %>% pull(std.error), 2)
+SR3.se = round(emm.R3 %>% filter(Genotype == "SR3") %>% pull(std.error), 2)
+R3R3.se = round(emm.R3 %>% filter(Genotype == "R3R3") %>% pull(std.error), 2)
+
+# Perform pairwise comparisons
+pairwise_comparisons.R3 = pairs(emmeans(model.R3, ~ Genotype))
+
+# Adjusting for multiple comparisons using FDR (Benjamini-Hochberg)
+pwc.R3 = summary(pairwise_comparisons.R3, adjust = "BH")
+
+SS.SR3 = round(pwc.R3 %>% filter(contrast == "SS - SR3") %>% pull(estimate), 2)
+SS.R3R3 = round(pwc.R3 %>% filter(contrast == "SS - R3R3") %>% pull(estimate), 2)
+SR3.R3R3 = round(pwc.R3 %>% filter(contrast == "SR3 - R3R3") %>% pull(estimate), 2)
+
+SS.SR3.se = round(pwc.R3 %>% filter(contrast == "SS - SR3") %>% pull(SE), 2)
+SS.R3R3.se = round(pwc.R3 %>% filter(contrast == "SS - R3R3") %>% pull(SE), 2)
+SR3.R3R3.se = round(pwc.R3 %>% filter(contrast == "SR3 - R3R3") %>% pull(SE), 2)
+
+SS.SR3.p = round(pwc.R3 %>% filter(contrast == "SS - SR3") %>% pull(p.value), 2)
+SS.R3R3.p = round(pwc.R3 %>% filter(contrast == "SS - R3R3") %>% pull(p.value), 2)
+SR3.R3R3.p = round(pwc.R3 %>% filter(contrast == "SR3 - R3R3") %>% pull(p.value), 2)
+```
+
+**Bootstrapping to calculate confidence intervals**
+
+Define a function that will fit the linear model to a resampled dataset and compute the additivity, selection coefficient, and dominance coefficient and confidence intervals.
+
+```{r}
+# Define the bootstrap function
+bootstrap_function.R3 = function(data, indices) {
+  sample_data = data[indices, ]  # Resample data
+  model = lm(eggs_laid ~ Genotype, data = sample_data)
+  coefficients = coef(model)
+  
+  # Extract coefficients
+  b0 = coefficients["(Intercept)"]
+  b1 = coefficients["GenotypeSR3"]
+  b2 = coefficients["GenotypeR3R3"]
+  
+  # Calculate the observed value for SR
+  eggs_SR3 = b0 + b1
+  
+  # Calculate the expected additivity value: (SS + RR) / 2
+  expected_additivity = (b0 + b0 + b2) / 2
+  
+  # Calculate deviation from additivity: SR - (SS + RR) / 2
+  deviation_from_additivity = eggs_SR3 - expected_additivity
+  
+  # Calculate dominance coefficient: (SR - SS) / (RR - SS)
+  h = b1 / b2 
+  
+  # Calculate selection coefficient: (RR - SS) / SS
+  s = b2 / b0
+  
+  return(c(deviation_from_additivity = deviation_from_additivity, selection = s, dominance = h))
+}
+
+# Set seed for reproducibility
+set.seed(123) 
+
+bootstraps = 1000 
+
+# Perform bootstrap with 1000 replicates
+results.R3 = boot(data = fecundity.data.R3, statistic = bootstrap_function.R3, R = bootstraps)
+summary(results.R3)
+
+# Bootstrap values
+deviation_additivity.R3 = as.numeric(results.R3$t0[1])
+selection.R3 = as.numeric(results.R3$t0[2])
+dominance.R3 = as.numeric(results.R3$t0[3])
+
+# Extract bootstrap replicates (bootstrapped statistics)
+boot_estimates = results.R3$t  # This extracts all the bootstrap replicates
+
+# Calculate standard errors for each statistic
+se_additivity_R3 = sd(boot_estimates[, 1])  # For additivity
+se_selection_R3 = sd(boot_estimates[, 2])   # For selection coefficient
+se_dominance_R3 = sd(boot_estimates[, 3])   # For dominance coefficient
+
+# Compute confidence intervals
+deviation_additivity_ci.R3 = boot.ci(boot.out = results.R3, type = "perc", index = 1)  # Deviation from additivity
+selection_ci.R3 = boot.ci(boot.out = results.R3, type = "perc", index = 2)  # Selection coefficient
+dominance_ci.R3 = boot.ci(boot.out = results.R3, type = "perc", index = 3)  # Dominance coefficient
+
+# Extract CI values
+deviation_additivity_ci.R3.lower_ci = round(deviation_additivity_ci.R3$percent[4], 2)  # Lower limit
+deviation_additivity_ci.R3.upper_ci = round(deviation_additivity_ci.R3$percent[5], 2)  # Upper limit
+
+selection_ci.R3.lower_ci = round(selection_ci.R3$percent[4], 2)  # Lower limit
+selection_ci.R3.upper_ci = round(selection_ci.R3$percent[5], 2)  # Upper limit
+
+dominance_ci.R3.lower_ci = round(dominance_ci.R3$percent[4], 2)  # Lower limit
+dominance_ci.R3.upper_ci = round(dominance_ci.R3$percent[5], 2)  # Upper limit
+
+# Compute p-values for each statistic
+pvalue_additivity.R3 = round(boot.pval(results.R3, index = 1, type = "perc", theta_null = 0), 4)  # p-value for deviation from additivity
+pvalue_selection.R3 = round(boot.pval(results.R3, index = 2, type = "perc", theta_null = 0), 4)   # p-value for selection coefficient
+pvalue_dominance.R3 = round(boot.pval(results.R3, index = 3, type = "perc", theta_null = 0.5), 4)   # p-value for dominance coefficient
+```
+
+# 3. Tables with statistics
+
+```{r}
+library(kableExtra)
+library(htmltools)
+library(webshot)
+source("./StatTable.R") # table for statistics
+```
+
+## 3.1 Ace R1 genotype
+
+```{r}
+# Call StatTable for model.R1
+StatTable(model = model.R1, 
+          directory = "./tables/", 
+          display_title = "Effect of genotype on fecundity",  # Title for the table
+          save_title = "Fecundity.R1",  # Title for the saved file
+          pred_labels = c("Intercept","SR1", "R1R1"), # replace with your labels
+          dv_labels = "Genotype")
+
+# dataframe with estimates
+table.R1 = data.frame(
+  Parameter = c("SS mean", "SR1 mean", "R1R1 mean", 
+                "SS vs. SR1", "SS vs. R1R1", "SR1 vs. R1R1", 
+                "SR1 - (SS + R1R1)/2 (additivity)", 
+                "(R1R1 - SS) / R1R1 (selection, s)", "(SR1 - SS) / (R1R1 - SS) (dominance, h)"), 
+  Fecundity = c(SS.mean, SR1.mean, R1R1.mean, 
+                SS.SR1, SS.R1R1, SR1.R1R1, 
+                deviation_additivity.R1, selection.R1, dominance.R1), 
+  Std.Error = c(SS.se, SR1.se, R1R1.se, 
+                SS.SR1.se, SS.R1R1.se, SR1.R1R1.se, 
+                se_additivity_R1, se_selection_R1, se_dominance_R1),
+  Lower.CI = c("-", "-", "-", "-", "-", "-",
+                deviation_additivity_ci.R1.lower_ci,
+                selection_ci.R1.lower_ci,
+                dominance_ci.R1.lower_ci),
+  Upper.CI = c("-", "-", "-", "-", "-", "-",
+                 deviation_additivity_ci.R1.upper_ci,
+                 selection_ci.R1.upper_ci,
+                 dominance_ci.R1.upper_ci),
+  P.value = c("-", "-", "-", SS.SR1.p, SS.R1R1.p, SR1.R1R1.p, 
+         pvalue_additivity.R1, pvalue_selection.R1, pvalue_dominance.R1)
+)
+
+# Format the columns
+table.R1$Fecundity = formatC(table.R1$Fecundity, format = "f", digits = 2)
+table.R1$Std.Error = formatC(table.R1$Std.Error, format = "f", digits = 2)
+table.R1$Lower.CI = formatC(table.R1$Lower.CI, format = "f", digits = 2)
+table.R1$Upper.CI = formatC(table.R1$Upper.CI, format = "f", digits = 2)
+table.R1$P.value = formatC(table.R1$P.value, format = "e", digits = 4)  # 4 decimals for p-values
+
+
+table.R1.kable = kable(x = table.R1, digits = 4, align = 'l',
+                             caption = "<b>Effect estimates from linear model analysis for fecundity</b>") %>%
+                       kable_classic(full_width = TRUE, html_font = "Times New Roman", font_size = 16) %>%
+                       kable_styling(latex_options = c("striped", "hold_position"), position = "center") %>%
+                       row_spec(0, bold = TRUE, font_size = 16) %>%  # Make header bold and set font size
+                       row_spec(1:nrow(table.R1), font_size = 16)  # Smaller font for values
+table.R1.kable
+```
+
+## 3.2 Ace R2 genotype
+
+```{r}
+# Call StatTable for model.R2
+StatTable(model = model.R2, 
+          directory = "./tables/", 
+          display_title = "Effect of genotype on fecundity",  # Title for the table
+          save_title = "Fecundity.R2",  # Title for the saved file
+          pred_labels = c("Intercept", "SR2", "R2R2"), # Updated labels
+          dv_labels = "Genotype")
+
+# Dataframe with estimates
+table.R2 = data.frame(
+  Parameter = c("SS mean", "SR2 mean", "R2R2 mean", 
+                "SS vs. SR2", "SS vs. R2R2", "SR2 vs. R2R2", 
+                "SR2 - (SS + R2R2)/2 (additivity)", 
+                "(R2R2 - SS) / R2R2 (selection, s)", "(SR2 - SS) / (R2R2 - SS) (dominance, h)"), 
+  Fecundity = c(SS.mean, SR2.mean, R2R2.mean, 
+                SS.SR2, SS.R2R2, SR2.R2R2, 
+                deviation_additivity.R2, selection.R2, dominance.R2), 
+  Std.Error = c(SS.se, SR2.se, R2R2.se, 
+                SS.SR2.se, SS.R2R2.se, SR2.R2R2.se, 
+                se_additivity_R2, se_selection_R2, se_dominance_R2),
+  Lower.CI = c("-", "-", "-", "-", "-", "-",
+                deviation_additivity_ci.R2.lower_ci,
+                selection_ci.R2.lower_ci,
+                dominance_ci.R2.lower_ci),
+  Upper.CI = c("-", "-", "-", "-", "-", "-",
+                 deviation_additivity_ci.R2.upper_ci,
+                 selection_ci.R2.upper_ci,
+                 dominance_ci.R2.upper_ci),
+  P.value = c("-", "-", "-", SS.SR2.p, SS.R2R2.p, SR2.R2R2.p, 
+               pvalue_additivity.R2, pvalue_selection.R2, pvalue_dominance.R2)
+)
+
+# Format the columns
+table.R2$Fecundity = formatC(table.R2$Fecundity, format = "f", digits = 2)
+table.R2$Std.Error = formatC(table.R2$Std.Error, format = "f", digits = 2)
+table.R2$Lower.CI = formatC(table.R2$Lower.CI, format = "f", digits = 2)
+table.R2$Upper.CI = formatC(table.R2$Upper.CI, format = "f", digits = 2)
+table.R2$P.value = formatC(table.R2$P.value, format = "e", digits = 4)  # 4 decimals for p-values
+
+# Use kable to create the table
+table.R2.kable = kable(x = table.R2, digits = 4, align = 'l',
+                 caption = "<b>Effect estimates from linear model analysis for fecundity</b>") %>%
+            kable_classic(full_width = TRUE, html_font = "Times New Roman", font_size = 16) %>%
+            kable_styling(latex_options = c("striped", "hold_position"), position = "center") %>%
+            row_spec(0, bold = TRUE, font_size = 16) %>%  # Make header bold and set font size
+            row_spec(1:nrow(table.R2), font_size = 16)  # Smaller font for values
+```
+
+## 3.3 Ace R3 genotype
+
+```{r}
+# Call StatTable for model.R3
+StatTable(model = model.R3, 
+          directory = "./tables/", 
+          display_title = "Effect of genotype on fecundity",  # Title for the table
+          save_title = "Fecundity.R3",  # Title for the saved file
+          pred_labels = c("Intercept", "SR3", "R3R3"), # Updated labels
+          dv_labels = "Genotype")
+
+# Dataframe with estimates
+table.R3 = data.frame(
+  Parameter = c("SS mean", "SR3 mean", "R3R3 mean", 
+                "SS vs. SR3", "SS vs. R3R3", "SR3 vs. R3R3", 
+                "SR3 - (SS + R3R3)/2 (additivity)", 
+                "(R3R3 - SS) / R3R3 (selection, s)", "(SR3 - SS) / (R3R3 - SS) (dominance, h)"), 
+  Fecundity = c(SS.mean, SR3.mean, R3R3.mean, 
+                SS.SR3, SS.R3R3, SR3.R3R3, 
+                deviation_additivity.R3, selection.R3, dominance.R3), 
+  Std.Error = c(SS.se, SR3.se, R3R3.se, 
+                SS.SR3.se, SS.R3R3.se, SR3.R3R3.se, 
+                se_additivity_R3, se_selection_R3, se_dominance_R3),
+  Lower.CI = c("-", "-", "-", "-", "-", "-",
+                deviation_additivity_ci.R3.lower_ci,
+                selection_ci.R3.lower_ci,
+                dominance_ci.R3.lower_ci),
+  Upper.CI = c("-", "-", "-", "-", "-", "-",
+                 deviation_additivity_ci.R3.upper_ci,
+                 selection_ci.R3.upper_ci,
+                 dominance_ci.R3.upper_ci),
+  P.value = c("-", "-", "-", SS.SR3.p, "<.0001", "<.0001", 
+               "1e-16", pvalue_selection.R3, pvalue_dominance.R3)
+)
+
+# Format the columns
+table.R3$Fecundity = formatC(table.R3$Fecundity, format = "f", digits = 2)
+table.R3$Std.Error = formatC(table.R3$Std.Error, format = "f", digits = 2)
+table.R3$Lower.CI = formatC(table.R3$Lower.CI, format = "f", digits = 2)
+table.R3$Upper.CI = formatC(table.R3$Upper.CI, format = "f", digits = 2)
+table.R3$P.value = formatC(table.R3$P.value, format = "e", digits = 4)  # 4 decimals for p-values
+
+# Use kable to create the table
+table.R3.kable = kable(x = table.R3, digits = 4, align = 'l',
+                 caption = "<b>Effect estimates from linear model analysis for fecundity</b>") %>%
+            kable_classic(full_width = TRUE, html_font = "Times New Roman", font_size = 16) %>%
+            kable_styling(latex_options = c("striped", "hold_position"), position = "center") %>%
+            row_spec(0, bold = TRUE, font_size = 16) %>%  # Make header bold and set font size
+            row_spec(1:nrow(table.R3), font_size = 16)  # Smaller font for values
+```
+
+## 3.4 R1+R2+R3 Table
+
+```{r}
+# remove first row in table 2 and table 3 because it is the same with table 1
+table.R1.R2.R3 = rbind(table.R1, table.R2 %>% slice(-1), table.R3 %>% slice(-1))
+
+# Use kable to create the table
+table.R1.R2.R3.kable = table.R1.R2.R3 %>%
+  kbl(caption = "Effect estimates from linear model analysis for fecundity") %>%
+  kable_classic(full_width = TRUE, html_font = "Arial") 
+   
+
+table.R1.R2.R3.kable
+
+
+table.R1.R2.R3.kable
+
+# Save the table as an HTML file
+save_kable(table.R1.R2.R3.kable, file = "./tables/table_fecundity.html")
+
+# Use webshot to convert HTML to PDF
+webshot("./tables/table_fecundity.html", file = "./tables/table_fecundity.pdf")
+```
+
+## 3.5 Data for simulations
+
+```{r}
+table.fecundity = rbind (table.R1, table.R2, table.R3)
+```
+
+# 4. Plots
+
+### 4.1 Ace R1 genotype
+
+```{r}
+
+genotype_labels = c("SS","SR1","R1R1")
+
+# Define the custom colors for each genotype
+#genotype_colors = c("#30a4bc", "#97D1DD", "#ffce1b")
+genotype_colors = c("#165094", "#7396BF","#ce8e58")
+
+
+# Define the shapes for each genotype
+genotype_shapes = c(16, 15, 17)
+
+
+R1_fecundity = ggplot() +
+  
+  annotate("segment", x = 1, xend = 3, y = 200.2222, yend = 136.5000, colour = "#ce8e58", size=0.5, alpha=0.5) +
+  
+  # This plots individual values for each genotype
+  geom_jitter(data = fecundity.data %>% filter(Genotype %in% c("SS", "SR1", "R1R1")),
+             aes(x=Genotype, y = eggs_laid, color = Genotype, shape = Genotype), size = 4, alpha = 0.4, width = 0.1) +
+
+  # add a line for SS mean
+  geom_hline(yintercept = 200.2222, color = "black", linetype = "solid", size = 0.25) +
+  
+  # This plots the mean fecundity for each genotype
+  geom_point(data = data.fecundity.summary %>% filter(Genotype %in% c("SS","SR1", "R1R1")),
+              aes(x=Genotype, y = mean, color = Genotype, shape = Genotype), size = 8, alpha = 1) +
+  
+  # This plots the standard error for each genotype
+  geom_errorbar(data = data.fecundity.summary %>% filter(Genotype %in% c("SS", "SR1", "R1R1")),
+                aes(x=Genotype, ymin = mean - se, ymax = mean + se, color = Genotype), width = 0) +
+  
+  # Map the colors to the genotypes
+  scale_color_manual(values = genotype_colors) +
+  
+   # Map the shapes to the genotypes
+  scale_shape_manual(values = genotype_shapes) +
+  
+  # Add the s and h coefficients for R1
+  geom_text(aes(x = 1.2, y = 320, 
+                label = "s = -0.32 +/-0.09** \nh = 0.55 +/-0.40"), 
+            size = 8, hjust = 0, vjust = 1) +
+
+  scale_y_continuous(breaks = seq(50, 320, 50), 
+                     limits = c(50,320)) +
+  
+  scale_x_discrete(labels = genotype_labels) +
+  
+  labs(x = "", y = "Fecundity") +
+  
+  theme_classic() +
+  
+   theme(
+     panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+ #   panel.background= element_rect(color ="#FCCC1A", size = 2),
+    
+    # Increase the size of the axis titles
+    axis.title.y = element_text(size = 24),
+
+    # Increase the size of the axis tick labels
+    axis.text.x = element_text(size = 22),
+    axis.text.y = element_text(size = 20),
+ 
+    # No legend
+    legend.position = "none")
+
+R1_fecundity
+
+ggsave("./plots/R1_fecundity.png",R1_fecundity,  width = 5 , height = 5)
+```
+
+### 4.2 Ace R2 genotype
+
+```{r}
+
+genotype_labels = c("SS","SR2","R2R2")
+
+
+
+# Define the custom colors for each genotype
+#genotype_colors = c("#30a4bc", "#97D1DD", "#ec4176")
+genotype_colors = c("#165094", "#7396BF","#e1615e")
+
+
+# Define the shapes for each genotype
+
+genotype_shapes = c(16, 15, 17)
+
+
+R2_fecundity = ggplot() +
+  
+  annotate("segment", x = 1, xend = 3, y = 200.2222, yend = 167.7778, colour = "#ec4176", size=0.5, alpha=0.5) +
+  
+  # This plots individual values for each genotype
+  geom_jitter(data = fecundity.data %>% filter(Genotype %in% c("SS", "SR2", "R2R2")),
+             aes(x=Genotype, y = eggs_laid, color = Genotype, shape = Genotype), size = 4, alpha = 0.4, width = 0.1) +
+
+  # add a line for SS mean
+  geom_hline(yintercept = 200.2222, color = "black", linetype = "solid", size = 0.25) +
+  
+  # This plots the mean fecundity for each genotype
+  geom_point(data = data.fecundity.summary %>% filter(Genotype %in% c("SS","SR2", "R2R2")),
+              aes(x=Genotype, y = mean, color = Genotype, shape = Genotype), size = 8, alpha = 1) +
+  
+  # This plots the standard error for each genotype
+  geom_errorbar(data = data.fecundity.summary %>% filter(Genotype %in% c("SS", "SR2", "R2R2")),
+                aes(x=Genotype, ymin = mean - se, ymax = mean + se, color = Genotype), width = 0) +
+ 
+  # Map the colors to the genotypes
+  scale_color_manual(values = genotype_colors) +
+  
+   # Map the shapes to the genotypes
+  scale_shape_manual(values = genotype_shapes) +
+  
+  # Add the s and h coefficients for R2
+  geom_text(aes(x = 1.2, y = 320, 
+                label = "s = -0.16 +/-0.09 \nh = 0.39 +/-0.40"), 
+            size = 8, hjust = 0, vjust = 1) +
+  
+  scale_y_continuous(breaks = seq(50, 320, 50), 
+                     limits = c(50,320)) +
+  
+  scale_x_discrete(labels = genotype_labels) +
+  
+  labs(x = "", y = "Fecundity") +
+  
+  theme_classic() +
+  
+  theme(
+     panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+ #   panel.background= element_rect(color ="#FCCC1A", size = 2),
+    
+    # Increase the size of the axis titles
+    axis.title.y = element_text(size = 24),
+
+    # Increase the size of the axis tick labels
+    axis.text.x = element_text(size = 22),
+    axis.text.y = element_text(size = 20),
+ 
+    # No legend
+    legend.position = "none")
+
+R2_fecundity
+
+ggsave("./plots/R2_fecundity.png",R2_fecundity ,width = 5 , height = 5)
+```
+
+### 4.3 Ace R3 genotype
+
+```{r}
+library("ggpubr")
+
+genotype_labels = c("SS","SR3","R3R3")
+
+# Define the custom colors for each genotype
+#genotype_colors = c("black", "#4d4d4d",  "#FE2712")
+#genotype_colors = c("#30a4bc", "#30a4bc",  "#782e6e")
+genotype_colors = c("#165094", "#165094", "#702771")
+
+
+# Define the shapes for each genotype
+
+genotype_shapes = c(16, 15, 17)
+
+
+R3_fecundity = ggplot() +
+  
+  annotate("segment", x = 1, xend = 3, y = 200.2222, yend = 106.4444, colour = "#782e6e", size=0.5, alpha=0.5) +
+  
+  # This plots individual values for each genotype
+  geom_jitter(data = fecundity.data %>% filter(Genotype %in% c("SS", "SR3", "R3R3")),
+             aes(x=Genotype, y = eggs_laid, color = Genotype, shape = Genotype), size = 4, alpha = 0.4, width = 0.1) +
+
+  # add a line for SS mean
+  geom_hline(yintercept = 200.2222, color = "black", linetype = "solid", size = 0.25) +
+  
+  # This plots the mean fecundity for each genotype
+  geom_point(data = data.fecundity.summary %>% filter(Genotype %in% c("SS","SR3", "R3R3")),
+              aes(x=Genotype, y = mean, color = Genotype, shape = Genotype), size = 8, alpha = 1) +
+  
+  # This plots the standard error for each genotype
+  geom_errorbar(data = data.fecundity.summary %>% filter(Genotype %in% c("SS", "SR3", "R3R3")),
+                aes(x=Genotype, ymin = mean - se, ymax = mean + se, color = Genotype), width = 0) +
+  
+
+  # Map the colors to the genotypes
+  scale_color_manual(values = genotype_colors) +
+  
+   # Map the shapes to the genotypes
+  scale_shape_manual(values = genotype_shapes) +
+  
+  # Add the s and h coefficients for R3
+  geom_text(aes(x = 1.2, y = 320, 
+                label = "s = -0.47 +/-0.09*** \nh = -0.02 +/-0.40***"), 
+            size = 8, hjust = 0, vjust = 1) +
+  
+  scale_y_continuous(breaks = seq(50, 320, 50), 
+                     limits = c(50,320)) +
+  
+  scale_x_discrete(labels = genotype_labels) +
+  
+  labs(x = "", y = "Fecundity") +
+  
+  theme_classic() +
+   
+  theme(
+     panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+ #   panel.background= element_rect(color ="#FCCC1A", size = 2),
+    
+    # Increase the size of the axis titles
+    axis.title.y = element_text(size = 24),
+
+    # Increase the size of the axis tick labels
+    axis.text.x = element_text(size = 22),
+    axis.text.y = element_text(size = 20),
+ 
+    # No legend
+    legend.position = "none")
+
+R3_fecundity
+
+ggsave("./plots/R3_fecundity.png",R3_fecundity, width = 5 , height = 5)
+```
+
+## 5. References
+
+1.  Regression with categorical variable:
+
+    <https://www.youtube.com/watch?v=9yTui_LoSOc>
+
+    <http://www.sthda.com/english/articles/40-regression-analysis/163-regression-with-categorical-variables-dummy-coding-essentials-in-r/>
+
+2.  Posthoc for linear regression with categorical variables:
+
+    <https://biostats.w.uib.no/post-hoc-tests-multiple-comparisons-in-linear-models/?fbclid=IwZXh0bgNhZW0CMTEAAR0AmUvGICwwPPPMhMJPpMzpfRu8T50znT3I2iQFf9uCVBr6VImJjIuQ4G4_aem_jqDm-OcZa61xJDYWr5584Q>
+
+3.  Add p values manually:
+
+    <http://rpkgs.datanovia.com/ggpubr/reference/stat_pvalue_manual.html#examples>
+
+4.  Marginal means:
+
+    <https://easystats.github.io/modelbased/articles/estimate_means.html>
+
+    <https://www.rdocumentation.org/packages/msm/versions/1.7.1/topics/deltamethod>
+
+5.  Bootstrap:
+
+    <https://stats.oarc.ucla.edu/r/faq/how-can-i-generate-bootstrap-statistics-in-r/>
+
+    <https://advstats.psychstat.org/book/ci/bootstrap.php>
