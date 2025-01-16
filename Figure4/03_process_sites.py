@@ -167,4 +167,4 @@ if __name__ == "__main__":
         # .join(pl.from_pandas(sweep_r2s[['chrom','pos', 'r2']]).lazy(), on=["chrom", "pos"], how="left")
         .with_columns(pl.col("freq").list.first().alias("freq0"))
         .drop("delta", "freq")
-    ).collect().write_parquet("data/sites_main.parquet")
+    ).collect().write_parquet("data/processed/sites_main.parquet")

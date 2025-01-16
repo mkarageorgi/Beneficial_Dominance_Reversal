@@ -93,20 +93,9 @@ if __name__ == "__main__":
 
     # JOIN ALL
 
-    # sites = (
-    #     pl.read_parquet("data/sites_main.parquet")
-    #     .join(
-    #         pl.from_pandas(sweep_r2s[["chrom", "pos", "r", "r2"]]),
-    #         on=["chrom", "pos"],
-    #         how="left",
-    #     )
-    #     .with_columns(pl.col("r").gt(0).alias("r2_flip"))
-    #     .filter(pl.col("sweep") == "post_trt")
-    # )
-
 
     # OVERWRITE freq0 for post_trt with freq0 for trt
-    sites = pl.read_parquet("data/sites_main.parquet")
+    sites = pl.read_parquet("data/processed/sites_main.parquet")
 
     sites = (
         sites.filter(pl.col("sweep") == "post_trt")

@@ -122,7 +122,7 @@ if __name__ == "__main__":
     # JOIN ALL
 
     sites = (
-        pl.read_parquet("data/sites_main.parquet")
+        pl.read_parquet("data/processed/sites_main.parquet")
         .join(
             pl.from_pandas(sweep_r2s[["chrom", "pos", "r", "r2"]]),
             on=["chrom", "pos"],
