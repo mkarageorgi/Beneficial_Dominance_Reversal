@@ -1,4 +1,4 @@
-# Figure 1
+## Figure 1
 
 This code reproduces Figure 1.
 
