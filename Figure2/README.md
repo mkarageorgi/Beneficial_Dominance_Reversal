@@ -1,4 +1,4 @@
-# Figure 2
+## Figure 2
 This code reproduces Figure 2.
 
 ### How to generate the figure
