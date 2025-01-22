@@ -22,6 +22,9 @@ These scripts are highly parallelized and computationally intensive, so a cluste
 
 * Run `plot.Rmd` to generate the figure file.
 
+
+Code and analysis by Marianna Karageorgi and Egor Lappo
+
 ### Programming environment
 
 The R scripts require the following packages: `c("tidyverse", "reticulate", "broom", "egg", "ggnewscale", "purrr", "furrr", "biomartr")`.
