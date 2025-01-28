@@ -149,7 +149,7 @@ rownames(result_df) <- NULL
 
 # Use the read_rm function which reads an organism specific Repeat Masker output file
 
-repeat.masker<- read_rm("/scratch/users/mkarag/dm3.fa.out") %>%
+repeat.masker<- read_rm("../data/raw/dm3.fa.out") %>%
   mutate(qry_id = str_replace(qry_id, "^chr", ""))
 
 setDT(repeat.masker) #turn to data.table
