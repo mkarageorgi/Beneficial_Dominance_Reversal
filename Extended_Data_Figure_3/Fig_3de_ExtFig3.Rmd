@@ -1,0 +1,1054 @@
+---
+title: "Malathion Resistance Timeseries Calculate LD50"
+author: "Marianna Karageorgi"
+date: '2024-01-16'
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# 1 Dose-Response data
+
+## 1.1 Data description
+
+During the course of the Orchard 2021 experiment, we scored malathion
+resistance in samples from cages that were either not exposed to
+malathion (E cages, control group) or exposed to malathion (P cages,
+treatment group).
+
+Dose response data:
+
+The data consists of repeated measurements with a hierarchical/nested
+structure:
+
+-   Level 1 = Timepoint (TP) (repeated measures)
+-   Level 2 = Treatment (E no malathion/not-treated, P with
+    malathion/treated)
+-   Level 3 = Treatment Replication (E1-E10 cages, P1 - P10 cages)
+
+```{r}
+# Load libraries
+library(tidyverse)
+library(Rmisc) #for stats
+library(scales) # to plot to axis
+library(cowplot) # to arrange graphs
+library(lubridate) # library to convert a character column to a date format
+```
+
+Select the Response and Explanatory variables
+
+```{r}
+# Read and preprocess the resistance data
+resistance = read.csv("./data/resistance_data_final.csv") %>%
+  mutate(Date = lubridate::ymd(Date), 
+         #convert character to date format
+         Alive = rowSums(.[paste0("Day_", 1:14)], na.rm = TRUE), 
+         #use na.rm because there are na data in tp7
+         Total = 50,
+         Dead = Total - Alive,
+         Survival = Alive / Total * 100) %>%
+  
+  filter(
+    # based on this filter sample TP4-P10-R3-0, TP5-E2-R2-0, TP9-E9-R2 are removed   because more than 50 flies emerged from each vial indicating technical error
+    Alive <= 50, 
+    Treatment %in% c("E", "P"),
+    # based on this filter data from replicate 3 are removed to have balanced data for all doses 
+    Replicate %in% c(1, 2),
+    # based on this filter data from cages E11 and E12 are removed to have balanced data between the two treatments
+    !Cage %in% c(11, 12)) %>%
+    
+  select(Date, TP, Treatment, Cage, Treatment_Cage, Replicate, Dose_ppm, Alive, Dead, Total, Survival)
+```
+
+## 1.2 Summary statistics
+
+Summarize data at the cage level
+
+```{r}
+# Calculate summary statistics at the cage level
+resistance_cage = resistance %>%
+  dplyr::mutate(Survival = Alive / Total * 100) %>%
+  dplyr::group_by(Date, TP, Treatment, Treatment_Cage, Dose_ppm) %>%
+  dplyr::summarize(mean_Survival = mean(Survival), n_class = n(), .groups = "keep")
+
+# Save resistance_cage to a CSV file - I need this for modeling
+write_csv(resistance_cage, "./processed_data/resistance_cage.csv")
+
+# Calculate summary statistics for mean_Survival of each treatment per timepoint
+summary_Survival = summarySE(data=resistance_cage, measurevar = 'mean_Survival', groupvars = c("Date","Treatment", "Dose_ppm")) 
+```
+
+# 2 Dose-Response Data: Exploratory data analysis
+
+```{r}
+library(ggpubr) 
+library(ggthemes)
+```
+
+```{r}
+# Plot the data for survival over dose for each time point
+treatment_labels = c( "Untreated", "Treated")
+treatment_values = c("#274060", "#FFA500")
+
+  
+resistance_plot = ggplot(data = resistance_cage, 
+                         aes(x= factor(Dose_ppm), y = mean_Survival, group=Treatment, color= Treatment))+
+  #this plots for individual cages across time points
+  geom_line(data=resistance_cage, aes(x = factor(Dose_ppm), y = mean_Survival,group=Treatment_Cage, color= Treatment), linewidth= 0.5, alpha = 0.5) +
+  #this plots for mean of cages across time points
+  geom_line(data=summary_Survival, aes(x=factor(Dose_ppm), y=mean_Survival, group=Treatment), linewidth= 0.8, alpha = 1)+
+  #this plots for standard error of cages across time points
+  geom_errorbar(data=summary_Survival, aes(ymin=mean_Survival-se, ymax=mean_Survival+se), width=.1) +
+  scale_color_manual(name = "",
+                   labels = treatment_labels,
+                   values = treatment_values) +
+  scale_x_discrete(breaks=seq(0, 15, 2.5))+
+  scale_y_continuous(breaks=seq(0, 100, 20))+
+  geom_hline(yintercept = 50, linetype = "dashed", color = "grey", size = 0.3)  +
+  labs(x= "Dose (ppm)", y = "Egg to adult viability (%)") +
+  facet_wrap(~ Date, scales = "free_x")+
+  theme_classic() +
+  theme(axis.text.x = element_text(size = 9), axis.text.y = element_text(size = 9),
+        axis.title = element_text(size = 10),
+        
+        legend.position = "top",
+        legend.justification = "center",  # Center the legend horizontally
+        legend.direction = "horizontal",   # Arrange the legend items horizontally
+        
+        legend.title = element_text(size=10),
+        legend.text = element_text(size=9),
+        
+        # Customize facet box lines (for generations)
+        panel.spacing = unit(0.5, "lines"),  # Adjust space between facet boxes
+        strip.background = element_rect(color = "black", fill = NA, size = 0.5)  # Thinner facet box lines for generations
+        )
+
+
+resistance_plot
+ggsave("./plots/TimeSeries_DoseResponseData.png", width = 6, height = 5)
+```
+
+# 3 Dose-Response Data: Fit 4-parameter logistic dose response model & estimate LD50
+
+Fit 4-parameter logistic dose response model to dose-response data for
+each replicate/cage/timepoint and estimate the LD50.
+
+```{r}
+library(purrr) # For functional programming - loop over lists
+library(broom) # For tidying model outputs
+library(drc)   # For dose response analysis
+
+
+# Group the data by Replicate, Treatment_Cage, and Date and nest the data - create list of dataframe
+by_replicate = resistance %>%
+  group_by(Replicate, Treatment_Cage, Treatment,TP, Date) %>%
+  nest()
+
+by_replicate$data[10] # uncomment to see the first element of the list
+ 
+# Define the function to fit a 4-parameter logistic model to dose-response data for each replicate
+logistic_model = function(df){
+     drm(Survival ~ Dose_ppm, data = df, 
+                fct = L.4(fixed = c(NA, 0,100, NA)))
+ }
+
+# Define the function to calculate LD50 from the 4-parameter logistic model. LD50 is the term e from the model - the second coefficient
+calculate_ld50 = function(mod){
+  ld50 = mod$coefficients[2]
+  return (ld50)
+}
+
+# Apply the functions to each data frame in the by_replicate object
+by_replicate.model = by_replicate %>%
+  mutate(model = map(data, logistic_model), # Fit logistic model to each data frame
+        ld50 = map_dbl(model, calculate_ld50)) # Calculate LD50 for each model
+
+
+# Store the results in data_LD50
+data_LD50 = by_replicate.model %>%
+  dplyr::select(Date,TP,Treatment, Treatment_Cage, Replicate, ld50)
+            
+
+# Write the data_LD50 to a CSV file
+write_csv(data_LD50, "./processed_data/data_LD50.csv")
+```
+
+# 
+
+# 4 LD50 Data
+
+## 4.1 Data description
+
+LD50 data calculated in section 3:
+
+The LD50 data consists of repeated measurements with a
+hierarchical/nested structure:
+
+-   Level 1 = Timepoint (TP) (repeated measures)
+-   Level 2 = Treatment (E no malathion/not-treated, P with
+    malathion/treated)
+-   Level 3 = Treatment Replication (E1-E10 cages, P1 - P10 cages)
+
+```{r}
+# Read and preprocess the LD50 data
+LD50 = read.csv("./processed_data/data_LD50.csv") %>%
+   dplyr::mutate(Date = lubridate::ymd(Date)) %>% 
+   #convert character to date format
+   dplyr::select(Date,TP,Treatment, Treatment_Cage, Replicate, ld50)  %>%
+   dplyr::filter(ld50 >0 & ld50 <30)
+```
+
+## 4.2 Summary statistics
+
+```{r}
+# Calculate summary statistics at the cage level
+LD50_cage = LD50 %>% 
+  dplyr::group_by(Date,TP, Treatment, Treatment_Cage) %>%
+  dplyr::summarize(
+    mean_LD50 = mean(ld50),
+    n_class = n(), .groups = "keep") 
+
+# Calculate summary statistics for LD50 each treatment per timepoint
+summary_LD50 = summarySE(data=LD50_cage, measurevar = 'mean_LD50', groupvars = c("Date","Treatment")) 
+```
+
+# 5 LD50 data - Exploratory Data Analysis
+
+## 5.1 LD50 Data - control & treated
+
+```{r}
+library(forcats)
+
+# defining the maximum and minimum values for the left axis
+max_left_y = 15
+min_left_y = 0
+
+treatment_labels = c("Treated","Untreated")
+treatment_values = c("#FFA500","#274060")
+
+# # Define p-values and their positions
+# p_values = c("***", "***")  # Adjust as needed
+# p_positions = data.frame(
+#   x = as.Date(c("2021-07-26", "2021-09-22")), 
+#   median = as.Date(c("2021-08-07", "2021-10-24")),
+#   xend = as.Date(c("2021-09-20", "2021-12-22")), # Dates for p-value annotation
+#   y = c(14.2, 14.2)  # y-coordinates for placing the p-values
+# )
+
+resistance_plot <- ggplot() +
+  
+# Annotate to indicate when malathion was applied
+annotate("rect", xmin=as.Date("2021-07-21"), xmax=as.Date("2021-08-25"), ymin=-Inf, ymax=Inf, alpha=0.2, fill="#FFA500") +
+annotate("rect", xmin=as.Date("2021-08-25"), xmax=as.Date("2021-09-06"), ymin=-Inf, ymax=Inf, alpha=0.4, fill="#FFA500") +
+annotate("text", x = as.Date("2021-08-09"), y = 14.5, label = "2.5\nppm", size = 5, color = "black")+
+annotate("text", x = as.Date("2021-08-31"), y = 14.5, label = "7.5\nppm", size = 5, color = "black") +
+
+# plot the resistance data
+  #this plots for individual cages across time points
+  geom_line(data=LD50_cage, aes(x = Date, y = mean_LD50,group=Treatment_Cage, color = fct_relevel(Treatment, "P", "E")), linewidth= 0.5, alpha = 0.6) +
+  #this plots for mean of cages across time points
+  geom_line(data=summary_LD50, aes(x=Date, y=mean_LD50, group=Treatment,  color = fct_relevel(Treatment, "P", "E")), linewidth= 1.5, alpha = 1)+
+  #this plots for mean of cages across time points
+  geom_point(data=summary_LD50, aes(x=Date, y=mean_LD50, group=Treatment,  color = fct_relevel(Treatment, "P", "E")), size= 3, alpha = 1)+
+  #this plots for standard error of cages across time points
+  geom_errorbar(data=summary_LD50, aes(x=Date,ymin=mean_LD50-se, ymax=mean_LD50+se, color = fct_relevel(Treatment, "P", "E")), width=.1) +
+  scale_color_manual(name = "", 
+                   labels = treatment_labels,
+                   values = treatment_values) +
+ 
+  scale_y_continuous(
+  name = expression(LD[50] * ", ppm"),
+  breaks = seq(min_left_y, max_left_y, 2.5),
+  limits = c(-2.25, 15)
+) +
+  
+  scale_x_date(limits = as.Date(c("2021-06-21","2021-12-22")))+
+  xlab("") + # removes the x axis title
+  theme_classic() + 
+
+
+# this code annotates the generations
+   annotate("rect", 
+           xmin = c(as.Date("2021-06-21"), as.Date("2021-07-01"), as.Date("2021-08-01"), as.Date("2021-09-01"), as.Date("2021-10-01"), as.Date("2021-11-01"), as.Date("2021-12-01")), 
+           xmax = c(as.Date("2021-07-01"), as.Date("2021-08-01"), as.Date("2021-09-01"), as.Date("2021-10-01"), as.Date("2021-11-01"), as.Date("2021-12-01"), as.Date("2021-12-22")), 
+           ymin = -2.25, 
+           ymax = -0.75, 
+           color = "black", 
+           alpha = 0)+
+  
+#this adds the labels in the center of the rectangles
+  annotate("text", x = c(as.Date("2021-06-26"), as.Date("2021-07-17"), as.Date("2021-08-17"), as.Date("2021-09-17"), as.Date("2021-10-17"), as.Date("2021-11-17"), as.Date("2021-12-10")), 
+           y = -1.5, 
+           label = c("1", "2-5", "5-8", "8-10", "11-12", "12", "(o)"), size = 5)+
+
+#this adds the title above the timeline that says "Generations"
+  annotate("text", x = as.Date("2021-09-17"), y = 0, label = "Generations", size = 5.5) +
+  ggtitle("Malathion resistance") +
+  
+  theme_classic() + 
+
+  theme(
+    # Increase the size of the axis titles
+    axis.title.y = element_text(size = 18),
+    
+    # Increase the size of the title font
+    plot.title = element_text(size = 20, hjust = 0.5),
+    
+    # Increase the size of the axis tick labels
+    axis.text.x = element_text(size = 18),
+    axis.text.y = element_text(size = 16),
+    
+    # Position the legend inside the plot in the upper left hand corner
+    legend.position = c(0.2, 0.99),
+        legend.background = element_rect(fill = "transparent"),
+        legend.justification = c("right", "top"),
+        legend.box.just = "right",
+        legend.margin = margin(3, 3, 3, 3),
+        legend.title = element_text(size = 18),
+        legend.text = element_text(size = 15)
+)
+  
+ # # Add p-value annotations
+ #  geom_segment(data = p_positions, aes(x = x, xend = xend, y = 14.2, yend = y), color = "#FFA500",, linetype = "solid", size= 0.3, alpha =0.5) +
+ #  geom_text(data = p_positions, aes(x = median, y = 14.2, label = p_values), color = "#FFA500", vjust = -1, size = 5)
+
+resistance_plot
+ggsave("./plots/resistance_plot.png", width = 8, height = 5)
+```
+
+## 5.2 LD50 Data - Only control
+
+```{r}
+library(forcats)
+
+# defining the maximum and minimum values for the left axis
+max_left_y = 15
+min_left_y = 0
+
+treatment_labels = c("Untreated","Treated")
+treatment_values = c("#274060", "#FFA500")
+
+# # Define p-values and their positions
+# p_values = c("***", "***")  # Adjust as needed
+# p_positions = data.frame(
+#   x = as.Date(c("2021-07-26", "2021-09-22")), 
+#   median = as.Date(c("2021-08-07", "2021-10-24")),
+#   xend = as.Date(c("2021-09-20", "2021-12-22")), # Dates for p-value annotation
+#   y = c(14.2, 14.2)  # y-coordinates for placing the p-values
+# )
+
+resistance_plot <- ggplot() +
+  
+# # Annotate to indicate when malathion was applied
+# annotate("rect", xmin=as.Date("2021-07-21"), xmax=as.Date("2021-08-25"), ymin=-Inf, ymax=Inf, alpha=0.2, fill="#FFA500") +
+# annotate("rect", xmin=as.Date("2021-08-25"), xmax=as.Date("2021-09-06"), ymin=-Inf, ymax=Inf, alpha=0.4, fill="#FFA500") +
+# annotate("text", x = as.Date("2021-08-09"), y = 14.5, label = "2.5\nppm", size = 5, color = "black")+
+# annotate("text", x = as.Date("2021-08-31"), y = 14.5, label = "7.5\nppm", size = 5, color = "black") +
+
+# plot the resistance data
+  #this plots for individual cages across time points
+  geom_line(data=LD50_cage %>% filter(Treatment =="E"), aes(x = Date, y = mean_LD50,group=Treatment_Cage, color = fct_relevel(Treatment, "E", "P")), linewidth= 0.5, alpha = 0.6) +
+  #this plots for mean of cages across time points
+  geom_line(data=summary_LD50 %>% filter(Treatment =="E"), aes(x=Date, y=mean_LD50, group=Treatment,  color = fct_relevel(Treatment, "E", "P")), linewidth= 1.5, alpha = 1)+
+  #this plots for mean of cages across time points
+  geom_point(data=summary_LD50 %>% filter(Treatment =="E"), aes(x=Date, y=mean_LD50, group=Treatment,  color = fct_relevel(Treatment, "E", "P")), size= 3, alpha = 1)+
+  #this plots for standard error of cages across time points
+  geom_errorbar(data=summary_LD50 %>% filter(Treatment =="E"), aes(x=Date,ymin=mean_LD50-se, ymax=mean_LD50+se, color = fct_relevel(Treatment, "E", "P")), width=.1) +
+  scale_color_manual(name = "", 
+                   labels = treatment_labels,
+                   values = treatment_values) +
+ 
+  scale_y_continuous(
+  name = expression(LD[50] * ", ppm"),
+  breaks = seq(min_left_y, max_left_y, 2.5),
+  limits = c(-2.25, 15)
+) +
+  
+  scale_x_date(limits = as.Date(c("2021-06-21","2021-12-22")))+
+  xlab("") + # removes the x axis title
+  theme_classic() + 
+
+
+# this code annotates the generations
+   annotate("rect", 
+           xmin = c(as.Date("2021-06-21"), as.Date("2021-07-01"), as.Date("2021-08-01"), as.Date("2021-09-01"), as.Date("2021-10-01"), as.Date("2021-11-01"), as.Date("2021-12-01")), 
+           xmax = c(as.Date("2021-07-01"), as.Date("2021-08-01"), as.Date("2021-09-01"), as.Date("2021-10-01"), as.Date("2021-11-01"), as.Date("2021-12-01"), as.Date("2021-12-22")), 
+           ymin = -2.25, 
+           ymax = -0.75, 
+           color = "black", 
+           alpha = 0)+
+  
+#this adds the labels in the center of the rectangles
+  annotate("text", x = c(as.Date("2021-06-26"), as.Date("2021-07-17"), as.Date("2021-08-17"), as.Date("2021-09-17"), as.Date("2021-10-17"), as.Date("2021-11-17"), as.Date("2021-12-10")), 
+           y = -1.5, 
+           label = c("1", "2-5", "5-8", "8-10", "11-12", "12", "(o)"), size = 5)+
+
+#this adds the title above the timeline that says "Generations"
+  annotate("text", x = as.Date("2021-09-17"), y = 0, label = "Generations", size = 5.5) +
+  # ggtitle("Malathion resistance") +
+  
+  theme_classic() + 
+
+  theme(
+    # Increase the size of the axis titles
+    axis.title.y = element_text(size = 18),
+    
+    # Increase the size of the title font
+    plot.title = element_text(size = 20, hjust = 0.5),
+    
+    # Increase the size of the axis tick labels
+    axis.text.x = element_text(size = 18),
+    axis.text.y = element_text(size = 16),
+    
+    # Position the legend inside the plot in the upper left hand corner
+    legend.position = "none"
+)
+  
+ # # Add p-value annotations
+ #  geom_segment(data = p_positions, aes(x = x, xend = xend, y = 14.2, yend = y), color = "#FFA500",, linetype = "solid", size= 0.3, alpha =0.5) +
+ #  geom_text(data = p_positions, aes(x = median, y = 14.2, label = p_values), color = "#FFA500", vjust = -1, size = 5)
+
+resistance_plot
+ggsave("./plots/resistance_plot_only_control.png", width = 7, height = 4.5)
+```
+
+## 5.3 LD50 Data - Only treated
+
+```{r}
+library(forcats)
+
+# defining the maximum and minimum values for the left axis
+max_left_y = 15
+min_left_y = 0
+
+treatment_labels = c("Treated","Untreated")
+treatment_values = c("#FFA500","#274060")
+
+# # Define p-values and their positions
+# p_values = c("***", "***")  # Adjust as needed
+# p_positions = data.frame(
+#   x = as.Date(c("2021-07-26", "2021-09-22")), 
+#   median = as.Date(c("2021-08-07", "2021-10-24")),
+#   xend = as.Date(c("2021-09-20", "2021-12-22")), # Dates for p-value annotation
+#   y = c(14.2, 14.2)  # y-coordinates for placing the p-values
+# )
+
+resistance_plot <- ggplot() +
+  
+# Annotate to indicate when malathion was applied
+annotate("rect", xmin=as.Date("2021-07-21"), xmax=as.Date("2021-08-25"), ymin=-Inf, ymax=Inf, alpha=0.2, fill="#FFA500") +
+annotate("rect", xmin=as.Date("2021-08-25"), xmax=as.Date("2021-09-06"), ymin=-Inf, ymax=Inf, alpha=0.4, fill="#FFA500") +
+annotate("text", x = as.Date("2021-08-09"), y = 14.5, label = "2.5\nppm", size = 5, color = "black")+
+annotate("text", x = as.Date("2021-08-31"), y = 14.5, label = "7.5\nppm", size = 5, color = "black") +
+
+# plot the resistance data
+  #this plots for individual cages across time points
+  geom_line(data=LD50_cage %>% filter(Treatment =="P"), aes(x = Date, y = mean_LD50,group=Treatment_Cage, color = fct_relevel(Treatment, "P", "E")), linewidth= 0.5, alpha = 0.6) +
+  #this plots for mean of cages across time points
+  geom_line(data=summary_LD50 %>% filter(Treatment =="P"), aes(x=Date, y=mean_LD50, group=Treatment,  color = fct_relevel(Treatment, "P", "E")), linewidth= 1.5, alpha = 1)+
+  #this plots for mean of cages across time points
+  geom_point(data=summary_LD50 %>% filter(Treatment =="P"), aes(x=Date, y=mean_LD50, group=Treatment,  color = fct_relevel(Treatment, "P", "E")), size= 3, alpha = 1)+
+  #this plots for standard error of cages across time points
+  geom_errorbar(data=summary_LD50 %>% filter(Treatment =="P"), aes(x=Date,ymin=mean_LD50-se, ymax=mean_LD50+se, color = fct_relevel(Treatment, "P", "E")), width=.1) +
+  scale_color_manual(name = "", 
+                   labels = treatment_labels,
+                   values = treatment_values) +
+ 
+  scale_y_continuous(
+  name = expression(LD[50] * ", ppm"),
+  breaks = seq(min_left_y, max_left_y, 2.5),
+  limits = c(-2.25, 15)
+) +
+  
+  scale_x_date(limits = as.Date(c("2021-06-21","2021-12-22")))+
+  xlab("") + # removes the x axis title
+  theme_classic() + 
+
+
+# this code annotates the generations
+   annotate("rect", 
+           xmin = c(as.Date("2021-06-21"), as.Date("2021-07-01"), as.Date("2021-08-01"), as.Date("2021-09-01"), as.Date("2021-10-01"), as.Date("2021-11-01"), as.Date("2021-12-01")), 
+           xmax = c(as.Date("2021-07-01"), as.Date("2021-08-01"), as.Date("2021-09-01"), as.Date("2021-10-01"), as.Date("2021-11-01"), as.Date("2021-12-01"), as.Date("2021-12-22")), 
+           ymin = -2.25, 
+           ymax = -0.75, 
+           color = "black", 
+           alpha = 0)+
+  
+#this adds the labels in the center of the rectangles
+  annotate("text", x = c(as.Date("2021-06-26"), as.Date("2021-07-17"), as.Date("2021-08-17"), as.Date("2021-09-17"), as.Date("2021-10-17"), as.Date("2021-11-17"), as.Date("2021-12-10")), 
+           y = -1.5, 
+           label = c("1", "2-5", "5-8", "8-10", "11-12", "12", "(o)"), size = 5)+
+
+#this adds the title above the timeline that says "Generations"
+  annotate("text", x = as.Date("2021-09-17"), y = 0, label = "Generations", size = 5.5) +
+  # ggtitle("Malathion resistance") +
+  
+  theme_classic() + 
+
+  theme(
+    # Increase the size of the axis titles
+    axis.title.y = element_text(size = 18),
+    
+    # Increase the size of the title font
+    plot.title = element_text(size = 20, hjust = 0.5),
+    
+    # Increase the size of the axis tick labels
+    axis.text.x = element_text(size = 18),
+    axis.text.y = element_text(size = 16),
+    
+    # Position the legend inside the plot in the upper left hand corner
+    legend.position = "none"
+)
+  
+ # # Add p-value annotations
+ #  geom_segment(data = p_positions, aes(x = x, xend = xend, y = 14.2, yend = y), color = "#FFA500",, linetype = "solid", size= 0.3, alpha =0.5) +
+ #  geom_text(data = p_positions, aes(x = median, y = 14.2, label = p_values), color = "#FFA500", vjust = -1, size = 5)
+
+resistance_plot
+ggsave("./plots/resistance_plot_only_treated.png", width = 7, height = 4.5)
+```
+
+# 6 LD50 data: Statistics & modeling
+
+```{r}
+# load packages for statistics 
+library(lme4)
+library(broom)
+library(lmerTest)
+library(effects)
+library(broom.mixed) #tidy methods for extracting model results from lmer() models, namely the tidy() function.
+
+source("./StatTable.R") # table for statistics
+```
+
+Questions to address:
+
+1\. Did LD50 evolve over time without the insecticide treatment in E
+cages?
+
+LD50 = time + (1\|cage) for E cages
+
+```{r}
+LD50_cage.E= LD50_cage %>% filter(Treatment =="E" ) %>% filter(TP >= 2)
+
+model_LD50_cage.E = lmer( mean_LD50 ~ TP + (1 |Treatment_Cage), REML=F, data = LD50_cage.E)
+
+summary(model_LD50_cage.E)
+tidy(model_LD50_cage.E)
+
+# Call StatTable for model_control_IGFG
+StatTable(model = model_LD50_cage.E, 
+          directory = "./tables/", 
+          display_title = "Extended Data Table 4.2 Effect of time on malathion resistance (LD50) in untreated cages",  # Title for the table
+          save_title = "LD50_untreated",  # Title for the saved file
+           pred_labels = c("Intercept","Time"), # replace with your labels
+          dv_labels = "Beginning of treatment to end of experiment")
+```
+
+2\. Did LD50 evolve during and after the insecticide treatment in P
+cages?
+
+```{r}
+LD50_cage.P= LD50_cage %>% filter(Treatment =="P" )
+
+
+# during treatment TPs: 2-6
+during_LD50.P = LD50_cage.P %>% filter(TP >= 2 & TP <= 6)
+
+model_during_LD50.P = lmer( mean_LD50 ~ TP + (1 |Treatment_Cage), REML=F, data = during_LD50.P)
+
+summary(model_during_LD50.P)
+tidy(model_during_LD50.P)
+
+# after treatment TPs : 6-9
+after_LD50.P = LD50_cage.P %>% filter(TP >= 6)
+
+model_after_LD50.P = lmer( mean_LD50 ~ TP + (1 |Treatment_Cage), REML=F, data = after_LD50.P)
+
+summary(model_after_LD50.P)
+tidy(model_after_LD50.P)
+
+
+# # Call StatTable for model_LD50_cage.P during treatment
+# StatTable(model = model_during_LD50.P, 
+#           directory = "./Stats/", 
+#           display_title = "Effect of time on malathion resistance (LD50) in treated cages during treatment exposure",  # Title for the table
+#           save_title = "LD50__during_treated",  # Title for the saved file
+#            pred_labels = c("Intercept","Time (July 26, 2021 to September 21, 2021)"), # replace with your labels
+#           dv_labels = "LD50")
+# 
+# 
+# 
+# 
+# 
+# # Call StatTable for model_LD50_cage.P after treatment
+# StatTable(model = model_after_LD50.P, 
+#           directory = "./Stats/", 
+#           display_title = "Effect of time on malathion resistance (LD50) in treated cages after cessation of treatment", 
+#           save_title = "LD50__after_treated",  # Title for the saved file
+#           pred_labels = c("Intercept","Time (September 21, 2021 to December 22, 2021)"), # replace with your labels
+#           dv_labels = "LD50")
+
+pred_labels_combined = c('Intercept', 'Time')
+dv_labels_combined = c('During treatment', 'After treatment')
+
+# Call StatTable for model_LD50_cage.P during and after treatment
+StatTable(c(model_during_LD50.P, model_after_LD50.P), 
+          display_title = 'Extended Data Table 4.1 Effect of time on malathion resistance (LD50) in treated cages',
+          save_title = 'ld50_treated', 
+          pred_labels = pred_labels_combined, 
+          dv_labels = dv_labels_combined, 
+          directory = './tables/')
+```
+
+3\. Did the insecticide treatment affect the evolution of LD50 over
+time?
+
+Split the dataset in three time periods (before/during/after treatment)
+and then fit a linear mixed effects model on mean_LD50 (dependent
+variable) for each time period. The mean_LD50 is the average of 1-2
+measurements per cage/treatment/timepoint. The model structure is:
+
+LD50 = time + treatment + time\*treatment + (1\|cage)
+
+```{r}
+# before treatment TPs: 1-2
+before_LD50 <- LD50_cage %>% filter( TP <= 2)
+
+model_before_LD50 <- lmer( mean_LD50 ~ TP + Treatment + TP : Treatment + (1 |Treatment_Cage), REML=F, data = before_LD50)
+
+summary(model_before_LD50)
+tidy(model_before_LD50)
+
+# during treatment TPs: 2-6
+during_LD50 <- LD50_cage %>% filter(TP >= 2 & TP <= 6)
+
+model_during_LD50 <- lmer( mean_LD50 ~ TP + Treatment + TP : Treatment + (1 |Treatment_Cage), REML=F, data = during_LD50)
+
+summary(model_during_LD50)
+tidy(model_during_LD50)
+
+# after treatment TPs : 6-9
+after_LD50 <- LD50_cage %>% filter(TP >= 6)
+
+model_after_LD50 <- lmer( mean_LD50 ~ TP + Treatment + TP : Treatment + (1 |Treatment_Cage), REML=F, data = after_LD50)
+
+summary(model_after_LD50)
+tidy(model_after_LD50)
+```
+
+# 7 Predicted (simulations) vs experimental evolution resistance
+
+## 7.1 Dose-response-curves: Simulation vs experimental data
+
+```{r}
+# simulation dose response data
+resistance.simulation = read_csv("./sim_resistance/sim_resistance_data.csv") %>%
+  
+  dplyr::rename(Treatment = environment, Generation = gen. , Dose_ppm = 'drug conc.', Survival = resistance, Date =date) %>%
+  
+  mutate(Treatment = recode(Treatment, 
+                                  "pesticide" = "P",
+                                   "control" = "E")) %>%
+  
+  # turn survival to *100, add a column se for binding
+  mutate(Survival = Survival * 100, se = NA, group= "Simulation") %>%
+  
+  dplyr::select(group, Date, Generation, Treatment, Dose_ppm, Survival,se)
+
+# summary experimental dose response data for comparison
+resistance.experimental = summary_Survival %>%
+  
+  mutate(Generation = as.numeric(case_when(
+    Date == "2021-07-13" ~ "0",
+    Date == "2021-07-26" ~ "1",
+    Date == "2021-08-10" ~ "2",
+    Date == "2021-08-25" ~ "4", ## it's August 24 in other docs
+    Date == "2021-09-07" ~ "5",
+    Date == "2021-09-21" ~ "7",
+    Date == "2021-10-20" ~ "9",
+    Date == "2021-12-22" ~ "10",
+    TRUE ~ NA_character_  # Assign NA for dates that don't match
+  ))) %>%
+  
+  dplyr::rename(Survival = mean_Survival) %>%
+  
+  mutate(group = "Experimental") %>%
+  
+  dplyr::select(group, Date, Generation, Treatment, Dose_ppm, Survival,se)
+
+resistance.all = rbind(resistance.simulation,resistance.experimental)
+```
+
+-   Plot
+
+```{r}
+resistance.all$Treatment = factor(resistance.all$Treatment, levels = c("P", "E")) 
+
+# Create a custom labeler using as_labeller()
+gen_labels = as_labeller(function(x) paste("Gen", x))
+
+# Defining the maximum and minimum values for the left axis
+max_left_y = 100
+min_left_y = 0
+
+# Define labels and colors for Treatment
+treatment_labels = c("malathion-treated", "untreated")
+treatment_values = c("#FFA500", "#274060")
+
+# Define the linetype for simulations vs experimental evolution
+group_values = c("solid", "dashed")
+group_labels = c("experimental\n evolution", "viability selection\n model")
+
+
+# Create the plot
+resistance_plot.simulation.drc = ggplot() +
+  
+  # Plot the resistance data for simulations and summary experimental
+  geom_line(data=resistance.all, aes(x = factor(Dose_ppm), y = Survival, group = interaction(group, Treatment), color=Treatment, linetype = group), size=0.5) +
+  
+  # Plot the resistance data for simulations and summary experimental
+  geom_point(data=resistance.all, aes(x = factor(Dose_ppm), y = Survival, group = interaction(group, Treatment), color=Treatment, linetype = group), size=1) +
+  
+   # Plot standard error bars for summary experimental
+  geom_errorbar(data=resistance.all, aes(x=factor(Dose_ppm), ymin=Survival-se, ymax=Survival+se, color=Treatment), width=0.1) +
+  
+  # Colors for experimental vs simulations
+  scale_linetype_manual("", 
+                        values = group_values,
+                        labels = group_labels) +
+  
+  # Colors for treatments
+  scale_color_manual(name = "", 
+                     labels = treatment_labels,
+                     values = treatment_values) +
+  
+  scale_x_discrete(breaks=seq(0, 15, 2.5)) +
+  scale_y_continuous(breaks=seq(0, 100, 20), limits = c(min_left_y, max_left_y)) +  
+  
+  geom_hline(yintercept = 50, linetype = "dashed", color = "grey", size = 0.3)  +
+  labs(x= "Dose (ppm)", y = "Egg to adult viability (%)") +
+  
+  # Apply custom labeller for facet wrap
+  facet_wrap(~ Generation, labeller = gen_labels, scales = "free_x") +
+    
+  theme_classic() +
+  theme(axis.text.x = element_text(size = 8), axis.text.y = element_text(size = 8),
+        axis.title = element_text(size = 8),
+        
+        legend.position = "top",
+        legend.justification = "center",  # Center the legend horizontally
+        legend.direction = "horizontal",   # Arrange the legend items horizontally
+        legend.title = element_text(size=8),
+        legend.text = element_text(size=9),
+        
+       
+        # Customize facet box lines (for generations)
+        panel.spacing = unit(0.5, "lines"),  # Adjust space between facet boxes
+        strip.background = element_rect(color = "black", fill = NA, size = 0.5)  # Thinner facet box lines for generations
+       
+ )
+
+
+resistance_plot.simulation.drc
+ggsave("./plots/resistance_plot.simulation.drc.png", width = 5.5, height = 5)
+```
+
+## 7.2 LD50: Simulation vs experimental data
+
+```{r}
+# simulation data
+resistance.simulation
+
+# Group the data by Replicate, Treatment_Cage, and Date and nest the data - create list of dataframe
+by_replicate_simulation = resistance.simulation %>%
+  group_by(Treatment,Generation) %>%
+  nest()
+
+by_replicate_simulation$data[[1]] # uncomment to see the first element of the list
+ 
+# Define the function to fit a 4-parameter logistic model to dose-response data for each replicate
+logistic_model = function(df){
+     drm(Survival ~ Dose_ppm, data = df, 
+                fct = L.4(fixed = c(NA, 0,100, NA)))
+ }
+
+# Define the function to calculate LD50 from the 4-parameter logistic model. LD50 is the term e from the model - the second coefficient
+calculate_ld50 = function(mod){
+  ld50 = mod$coefficients[2]
+  return (ld50)
+}
+
+# Apply the functions to each data frame in the by_replicate object
+by_replicate.model.simulation = by_replicate_simulation %>%
+  mutate(model = map(data, logistic_model), # Fit logistic model to each data frame
+        ld50 = map_dbl(model, calculate_ld50)) # Calculate LD50 for each model
+
+
+# Store the results in data_LD50
+LD50.simulation = by_replicate.model.simulation %>%
+  mutate(group = "simulation",se = NA) %>%
+  dplyr::select(group, Generation, Treatment,ld50, se) 
+
+# simulation data LD50
+LD50.simulation
+
+# experimental data LD50
+LD50.experimental = summary_LD50 %>%
+  
+  mutate(Generation = as.numeric(case_when(
+    Date == "2021-07-13" ~ "0",
+    Date == "2021-07-26" ~ "1",
+    Date == "2021-08-10" ~ "2",
+    Date == "2021-08-25" ~ "4", ## it's August 24 in other docs
+    Date == "2021-09-07" ~ "5",
+    Date == "2021-09-21" ~ "7",
+    Date == "2021-10-20" ~ "9",
+    Date == "2021-12-22" ~ "10",
+    TRUE ~ NA_character_  # Assign NA for dates that don't match
+  ))) %>%
+  
+  dplyr::rename(ld50 = mean_LD50) %>%
+  
+  mutate(group = "Experimental") %>%
+  
+  dplyr::select(group, Date, Generation, Treatment, ld50, se)
+
+
+LD50.all = rbind(LD50.simulation, LD50.experimental)
+```
+
+### 7.2.1 LD50: Simulation vs experimental data (both treated and untreated)
+
+```{r}
+# Defining the maximum and minimum values for the left axis
+max_left_y = 15
+min_left_y = 0
+
+# Define labels and colors for Treatment
+treatment_labels = c("Untreated","Malathion-treated")
+treatment_values = c("#274060","#FFA500")
+
+# Define the linetype for simulations vs experimental evolution
+group_values = c("solid", "dashed")
+group_labels = c("experimental\n evolution", "viability selection\n model")
+
+# Create the plot
+resistance_plot.simulation.ld50 = ggplot() +
+  
+  # Annotate to indicate where malathion was applied across generations
+  annotate("rect", xmin=1, xmax=5, ymin=-Inf, ymax=Inf, alpha=0.2, fill="#FFA500") +
+  annotate("rect", xmin=5, xmax=6, ymin=-Inf, ymax=Inf, alpha=0.4, fill="#FFA500") +
+
+  # Plot the resistance data for individual cages
+  geom_line(data=LD50.all, aes(x = Generation, y = ld50, group = interaction(group, Treatment), color=Treatment, linetype = group), size=1) +
+  
+  # Plot the resistance data for individual cages
+  geom_point(data=LD50.all, aes(x = Generation, y = ld50, group = interaction(group, Treatment), color=Treatment, linetype = group), size=2.5) +
+  
+  
+  # Plot standard error bars for cages across time points
+  geom_errorbar(data=LD50.all, aes(x=Generation, ymin=ld50-se, ymax=ld50+se, color=Treatment), width=.1) +
+   
+  # Customize colors for treatments
+  scale_color_manual(name = "", 
+                     labels = treatment_labels,
+                     values = treatment_values) +
+  
+  # legend for haplotypes
+  scale_linetype_manual("", 
+                        values = group_values,
+                        labels = group_labels) +
+ 
+  
+  # Y-axis scaling for LD50
+  scale_y_continuous(
+    name = expression(LD[50] * ", ppm"),
+    breaks = seq(min_left_y, max_left_y, 2.5),
+    limits = c(-2.25, 15)
+  ) +
+  
+  # X-axis for generations
+  scale_x_continuous(name = "Generation", breaks = seq(0, 10, 1), limits = c(0, 10)) +
+  
+  # Plot title
+  ggtitle("Malathion resistance") +
+  
+  # Customize theme
+  theme_classic() +
+  
+  theme(
+    axis.title.y = element_text(size = 18),
+    axis.title.x = element_text(size = 18),
+    plot.title = element_text(size = 20, hjust = 0.5),
+    axis.text.x = element_text(size = 18),
+    axis.text.y = element_text(size = 16),
+    
+    legend.position = "none",  # Remove the legend
+  )
+
+resistance_plot.simulation.ld50
+
+ggsave("./plots/resistance_plot.simulation.ld50.png", plot = resistance_plot.simulation.ld50, width = 7, height = 4.5)
+```
+
+### 7.2.2 LD50: Simulation vs experimental data (only untreated)
+
+```{r}
+# Defining the maximum and minimum values for the left axis
+max_left_y = 15
+min_left_y = 0
+
+# Define labels and colors for Treatment
+treatment_labels = c("Untreated","Malathion-treated")
+treatment_values = c("#274060","#FFA500")
+
+# Define the linetype for simulations vs experimental evolution
+group_values = c("solid", "dashed")
+group_labels = c("experimental\n evolution", "viability selection\n model")
+
+# Create the plot
+resistance_plot.simulation.ld50 = ggplot() +
+  
+  # # Annotate to indicate where malathion was applied across generations
+  # annotate("rect", xmin=1, xmax=5, ymin=-Inf, ymax=Inf, alpha=0.2, fill="#FFA500") +
+  # annotate("rect", xmin=5, xmax=6, ymin=-Inf, ymax=Inf, alpha=0.4, fill="#FFA500") +
+
+  # Plot the resistance data for individual cages
+  geom_line(data=LD50.all %>% filter(Treatment =="E"), aes(x = Generation, y = ld50, group = interaction(group, Treatment), color=Treatment, linetype = group), size=1) +
+  
+  # Plot the resistance data for individual cages
+  geom_point(data=LD50.all %>% filter(Treatment =="E"), aes(x = Generation, y = ld50, group = interaction(group, Treatment), color=Treatment, linetype = group), size=2.5) +
+  
+  
+  # Plot standard error bars for cages across time points
+  geom_errorbar(data=LD50.all %>% filter(Treatment =="E"), aes(x=Generation, ymin=ld50-se, ymax=ld50+se, color=Treatment), width=.1) +
+   
+  # Customize colors for treatments
+  scale_color_manual(name = "", 
+                     labels = treatment_labels,
+                     values = treatment_values) +
+  
+  # legend for haplotypes
+  scale_linetype_manual("", 
+                        values = group_values,
+                        labels = group_labels) +
+ 
+  
+  # Y-axis scaling for LD50
+  scale_y_continuous(
+    name = expression(LD[50] * ", ppm"),
+    breaks = seq(min_left_y, max_left_y, 2.5),
+    limits = c(-2.25, 15)
+  ) +
+  
+  # X-axis for generations
+  scale_x_continuous(name = "Generation", breaks = seq(0, 10, 1), limits = c(0, 10)) +
+  
+  # Plot title
+  ggtitle("Untreated cages") +
+  
+  # Customize theme
+  theme_classic() +
+  
+  theme(
+    axis.title.y = element_text(size = 18),
+    axis.title.x = element_text(size = 18),
+    plot.title = element_text(size = 20, hjust = 0.5),
+    axis.text.x = element_text(size = 18),
+    axis.text.y = element_text(size = 16),
+    
+    legend.position = "none",  # Remove the legend
+  )
+
+resistance_plot.simulation.ld50
+
+ggsave("./plots/resistance_plot.simulation.ld50.untreated.png", plot = resistance_plot.simulation.ld50, width = 7, height = 4.5)
+```
+
+### 7.2.3 LD50: Simulation vs experimental data (only treated)
+
+```{r}
+# Defining the maximum and minimum values for the left axis
+max_left_y = 15
+min_left_y = 0
+
+# Define labels and colors for Treatment
+treatment_labels = c("Untreated","Malathion-treated")
+treatment_values = c("#FFA500","#274060")
+
+# Define the linetype for simulations vs experimental evolution
+group_values = c("solid", "dashed")
+group_labels = c("experimental\n evolution", "viability selection\n model")
+
+# Create the plot
+resistance_plot.simulation.ld50 = ggplot() +
+  
+  # Annotate to indicate where malathion was applied across generations
+  annotate("rect", xmin=1, xmax=5, ymin=-Inf, ymax=Inf, alpha=0.2, fill="#FFA500") +
+  annotate("rect", xmin=5, xmax=6, ymin=-Inf, ymax=Inf, alpha=0.4, fill="#FFA500") +
+
+  # Plot the resistance data for individual cages
+  geom_line(data=LD50.all %>% filter(Treatment == "P"), aes(x = Generation, y = ld50, group = interaction(group, Treatment), color=Treatment, linetype = group), size=1) +
+  
+  # Plot the resistance data for individual cages
+  geom_point(data=LD50.all %>% filter(Treatment == "P"), aes(x = Generation, y = ld50, group = interaction(group, Treatment), color=Treatment, linetype = group), size=2.5) +
+  
+  
+  # Plot standard error bars for cages across time points
+  geom_errorbar(data=LD50.all %>% filter(Treatment == "P"), aes(x=Generation, ymin=ld50-se, ymax=ld50+se, color=Treatment), width=.1) +
+   
+  # Customize colors for treatments
+  scale_color_manual(name = "", 
+                     labels = treatment_labels,
+                     values = treatment_values) +
+  
+  # legend for haplotypes
+  scale_linetype_manual("", 
+                        values = group_values,
+                        labels = group_labels) +
+ 
+  
+  # Y-axis scaling for LD50
+  scale_y_continuous(
+    name = expression(LD[50] * ", ppm"),
+    breaks = seq(min_left_y, max_left_y, 2.5),
+    limits = c(-2.25, 15)
+  ) +
+  
+  # X-axis for generations
+  scale_x_continuous(name = "Generation", breaks = seq(0, 10, 1), limits = c(0, 10)) +
+  
+  # Plot title
+  ggtitle("Treated cages") +
+  
+  # Customize theme
+  theme_classic() +
+  
+  theme(
+    axis.title.y = element_text(size = 18),
+    axis.title.x = element_text(size = 18),
+    plot.title = element_text(size = 20, hjust = 0.5),
+    axis.text.x = element_text(size = 18),
+    axis.text.y = element_text(size = 16),
+    
+    legend.position = "none",  # Remove the legend
+  )
+
+resistance_plot.simulation.ld50
+
+ggsave("./plots/resistance_plot.simulation.ld50.treated.png", plot = resistance_plot.simulation.ld50, width = 7, height = 4.5)
+```
+
+# 8 References
+
+1.  For dose response analysis:
+
+2.  For modeling grouped binary data:
+    <https://www.flutterbys.com.au/stats/tut/tut10.5a.html#h2_8>
+
+3.  <https://www.linearity.io/blog/color-palette/#tips-for-better-color-choices>
+
+4.  <https://www.classes.cs.uchicago.edu/archive/2021/spring/11111-1/color-wheel/index.html>
+
+5.  <https://www.color-hex.com/color/fc600a>
