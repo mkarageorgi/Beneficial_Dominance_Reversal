@@ -6,13 +6,15 @@ date: "2023-10-28"
 
 ## 1 Data Description
 
--   The SNP table for the inbred lines used in Orchard 2021 can be found in the Google Drive in this link:
+-   The SNP table for the inbred lines used in Orchard 2021 can be found in Dryad in this link:
 
-    <https://drive.google.com/drive/u/0/folders/1gw2rLUUoO_AT9DdcfINohVPSwA61vHLO>
+    https://doi.org/10.5061/dryad.w0vt4b937
 
     In the SNP dataframe, **columns** represent the inbred lines while **rows** represent the biallelic sites across the 3R chromosome.
 
--   The haf files for the Orchard 2021 can be found in the Google Drive in this link: <https://drive.google.com/drive/u/0/folders/1uAzkkZb-G8M5tUZdQI081lPTm2anhKn2>
+-   The haf files for the Orchard 2021 can be found in Dryad in this link: 
+    https://doi.org/10.5061/dryad.w0vt4b937
+
 
     In each HAF dataframe, **columns** represent the inbred lines in the order of the SNP table while **rows** represent the window we have estimation of frequency based on HAF. Windows shift by 1/10.
 
