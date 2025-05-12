@@ -539,7 +539,7 @@ tidy(model_LD50_cage.E)
 # Call StatTable for model_control_IGFG
 StatTable(model = model_LD50_cage.E, 
           directory = "./tables/", 
-          display_title = "Extended Data Table 4.2 Effect of time on malathion resistance (LD50) in untreated cages",  # Title for the table
+          display_title = "Extended Data Table 5.2 Effect of time on malathion resistance (LD50) in untreated cages",  # Title for the table
           save_title = "LD50_untreated",  # Title for the saved file
            pred_labels = c("Intercept","Time"), # replace with your labels
           dv_labels = "Beginning of treatment to end of experiment")
@@ -594,7 +594,7 @@ dv_labels_combined = c('During treatment', 'After treatment')
 
 # Call StatTable for model_LD50_cage.P during and after treatment
 StatTable(c(model_during_LD50.P, model_after_LD50.P), 
-          display_title = 'Extended Data Table 4.1 Effect of time on malathion resistance (LD50) in treated cages',
+          display_title = 'Extended Data Table 5.1 Effect of time on malathion resistance (LD50) in treated cages',
           save_title = 'ld50_treated', 
           pred_labels = pred_labels_combined, 
           dv_labels = dv_labels_combined, 
