@@ -1,0 +1,71 @@
+---
+title: "Data for viability simulations"
+author: "Marianna Karageorgi"
+date: "2024-08-31"
+---
+
+**Data**
+
+We use modeling and simulations to examine the extent to which viability selection of the different *Ace* genotypes could explain the observed changes in *Ace* allele frequencies and resistance levels in our field mesocosm experiment.
+
+For the viability model, we used laboratory measurements to determine wij in the absence and presence of 2.5ppm and 7.5ppm of malathion. We used the marginal mean values from the linear model for viability for each genotype (Fig2 h-i) and the predicted viability values from the dose-response analysis for 2.5ppm and 7.5ppm malathion (Extended Data Figure - dose response curves). We also use prediction from other doses for estimating predicted levels of resistance.
+
+Due to the lack of measurements for heterozygous resistant genotypes, we assumed that combinations of resistant alleles are codominant.
+
+```{r}
+library(tidyverse)
+```
+
+```{r}
+# data from viability 
+viability_no_malathion =read_csv("./data/model.viability.0ppm.csv") %>%
+  mutate(Dose = 0) %>%
+  rename(Genotype = Parameter) %>%
+  mutate(Genotype = sub(" .*", "", Genotype)) %>%
+  dplyr::select(Genotype, Dose, Viability)
+
+# data from dose response curve analysis 
+viability_malathion = read_csv("./data/drc.model.viability.malathion.csv") %>%
+  rename(Viability= Survival) %>%
+  mutate(Viability = Viability/100) %>%
+  dplyr::select(Genotype, Dose, Viability)
+
+#all data
+viability_all_wide = rbind(viability_no_malathion, viability_malathion) %>%
+  
+  pivot_wider(names_from = Genotype, values_from = Viability) %>%
+  
+  # add the values for combinaiton of R alleles 
+  mutate(R1R2 = (R1R1 + R2R2) / 2,
+         R1R3 = (R1R1 + R3R3) / 2,
+         R2R3 = (R2R2 + R3R3) / 2)
+
+# Convert the wide data back into long format
+viability_all_long = viability_all_wide %>%
+  
+  pivot_longer(cols = c(SS, SR1, SR2, SR3, R1R1, R2R2, R3R3, R1R2, R2R3, R1R3),  
+               names_to = "Genotype",             
+               values_to = "Viability")  %>%
+  
+  # format with Nastia's columns names 
+  rename(conc = Dose) %>%
+  rename(viabilities = Viability) %>%
+  # recode Genotype 
+  mutate(genotypes = case_when(
+    Genotype == "SS" ~ "00",
+    Genotype == "SR1" ~ "01",
+    Genotype == "SR2" ~ "02",
+    Genotype == "SR3" ~ "03",
+    Genotype == "R1R1" ~ "11",
+    Genotype == "R2R2" ~ "22",
+    Genotype == "R3R3" ~ "33",
+    Genotype == "R1R2" ~ "12",
+    Genotype == "R2R3" ~ "23",
+    Genotype == "R1R3" ~ "13"
+  )) %>%
+    mutate(viabilities = round(viabilities, 4)) %>%
+  
+  dplyr::select(conc, genotypes, viabilities)
+
+write_csv(viability_all_long, "./data/viability.values.simulations.csv")
+```
