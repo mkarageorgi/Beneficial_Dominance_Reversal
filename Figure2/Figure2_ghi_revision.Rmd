@@ -1,0 +1,720 @@
+---
+title: "Comparison of egg-adult viability between Ace genotypes in the absence of malathion"
+author: "Marianna Karageorgi"
+date: "2025-05-07"
+---
+
+# 1. Data
+
+Starting July 6th 2023, eggs of each D.melanogaster genotype (SS, R1R1, R2R2, R3R3, SR1, SR2, SR3) were exposed to regular Drosophila media (50 eggs/trial). For each genotype we had 10 replicates.
+
+Ace-S: IGFG, Ace-R1: [V]{.underline}GFG, Ace-R2: [V]{.underline}GF[A]{.underline}, Ace-R3: [VAY]{.underline}G
+
+### Data Wrangling
+
+```{r}
+library(tidyverse)
+library(data.table)
+```
+
+```{r}
+data = fread("./data/Viability_FINAL.csv")
+
+data.viability = data %>%
+  mutate(
+    Emerge = rowSums(select(., 4:12), na.rm = TRUE),
+    Total = 50,
+    Not_Emerge = Total - Emerge,
+    Survival = Emerge / Total * 100) %>%
+  
+    mutate(Genotype = factor(Genotype, 
+                             levels = c("SS","SR1","SR2","SR3","R1R1", "R2R2", "R3R3"))) %>%
+  select(Genotype, Emerge, Not_Emerge, Survival, Total)
+```
+
+### Summary Statistics
+
+```{r}
+data.viability.summary = group_by(data.viability, Genotype) %>%
+  summarise(
+    count = n(),
+    mean = mean(Survival, na.rm = TRUE),
+    sd = sd(Survival, na.rm = TRUE),
+    se = sd / sqrt(10)
+  )
+```
+
+### Viability data: Exploratory Data Analysis
+
+```{r}
+library("ggpubr")
+library("ggplot2")
+
+
+# Define the custom colors for the palette
+genotype_colors = c("black", "#FCCC1A","#8601AF","#FE2712",  "#FCCC1A", "#8601AF",   "#FE2712")
+
+# Define the linetypes for the boxes
+linetypes = c(1, 2, 2, 2, 1, 1, 1)
+
+
+viability_plot = ggplot(data.viability, 
+                        aes(Genotype, Survival)) +
+  
+  geom_boxplot(aes(linetype = Genotype, color = Genotype), fill = NA) +
+  
+  geom_point(aes(color = Genotype)) +  
+  scale_color_manual(values = genotype_colors) +
+  scale_linetype_manual(values = linetypes) +
+  labs(x = NULL, y = "Egg to adult vialibity (%)") +
+  ylim(40, 100) + 
+  theme_classic() 
+
+viability_plot 
+```
+
+# 2. Model data
+
+Use logistic regression model to analyze viability data for homozygous sensitive SS, homozygous resistant RR, and heterozygous SR genotypes. Use a logistic model because of grouped binary data (nr of egg emerged out of 50 eggs).
+
+The model is:
+
+logit(p)=log(p/(1-p)= b0​+b1​⋅SR+b2​⋅RR+ϵ
+
+The odds of emergence for each genotype is represented:
+
+For SS (reference group): odds.emerge.SS​=b0​
+
+For SR: odds.emerge.SR=b0+b1
+
+For RR: odds.emerge.RR=b0+b2
+
+Transform logit values to probabilities of emergence:
+
+proportion_SS = exp(logit_SS) / (1 + exp(logit_SS))
+
+proportion_SR = exp(logit_SR) / (1 + exp(logit_SR))
+
+proportion_RR = exp(logit_RR) / (1 + exp(logit_RR))
+
+```{r}
+# Fit logistic binomial model
+model.R = glm(cbind(Emerge, Not_Emerge) ~ Genotype, data = data.viability, family = "binomial")
+
+summary(model.R)
+```
+
+# 3. Metrics & Bootstrap for viability
+
+Estimate difference and metric parameters using coefficients from the logistic regression model. Then use bootstrapping to estimate confidence intervals for each parameter.
+
+**Additivity: Comparison between SR vs. (SS+RR)/2**
+
+Additivity is calculated as the difference between the SR genotype and the average of SS and RR genotypes. It can be compared to the expected value under additivity.
+
+-   Expected value under additivity:
+
+    SR- (SS+RR)/2 = proportion_SR -(proportion_SS+proportion_RR)/2
+
+-   Significance testing with two one-sided t-test: H0 = the estimate for additivity is 0. Ha1 = the estimate for dominance is higher than 0 Ha2 = the estimate for dominance is lower than 0.
+
+**Selection coefficient: Estimate ratio (RR - SS)/ SS**
+
+The selection coefficient is the ratio of the difference between RR and SS genotypes to the SS genotype. This parameter indicates how selection affects the fitness of the resistant genotype compared to the sensitive genotype.
+
+-   Estimate ratio (RR-SS)/SS = (proportion_RR-proportion_SS)/proportion_SS
+
+-   Significance testing with two-sided t-test: H0 = the estimate for selection equals to 0. Ha = the estimate for selection is different from 0.
+
+**Dominance coefficient: Estimate (SR−SS)/(RR−SS) (h)**
+
+The dominance coefficient measures the degree to which the heterozygous genotype (SR) exhibits fitness that is intermediate between the homozygous genotypes (SS and RR).
+
+-   Estimate ratio (proportion_SR-proportion_SS)/(proportion_RR-proportion_SS)
+
+-   Significance testing with two one-sided t-test: H0 = the estimate for dominance is 0.5. Ha1 = the estimate for dominance is higher than 0.5. Ha2 = the estimate for dominance is lower than 0.5
+
+```{r}
+library(boot)
+library(broom)
+
+# bootstrap & estimate metrics
+
+# bootstrap function
+metrics.boot = function(data, original) { 
+  # Create bootstrap sample
+  d = data %>%
+    group_by(Genotype) %>%
+    # randomly select 10 rows from each Genotype group, sampling with replacement
+    slice_sample(n = 10, replace = TRUE) %>% # n = number of reps in each fecundity group
+    ungroup()
+  
+  # Fit model to bootstrap sample 
+  model = glm(cbind(Emerge, Not_Emerge) ~ Genotype, data = d, family = "binomial")
+  coefficients = coef(model)
+  
+  # Extract coefficients to calculate odds of emergence for each genotype 
+  coefficients = model$coefficients  # Fix: extract coefficients from model
+  b0 = coefficients["(Intercept)"]
+  b1 = coefficients["GenotypeSR1"]
+  b2 = coefficients["GenotypeR1R1"]
+  b3 = coefficients["GenotypeSR2"]
+  b4 = coefficients["GenotypeR2R2"]
+  b5 = coefficients["GenotypeSR3"]
+  b6 = coefficients["GenotypeR3R3"]
+  
+  # Transform logit values to probabilities of emergence for each genotype to calculate metrics for each boot
+  ss    = exp(b0) / (1 + exp(b0))
+  sr1   = exp(b0 + b1) / (1 + exp(b0 + b1))
+  r1r1  = exp(b0 + b2) / (1 + exp(b0 + b2))
+  sr2   = exp(b0 + b3) / (1 + exp(b0 + b3))
+  r2r2  = exp(b0 + b4) / (1 + exp(b0 + b4))
+  sr3   = exp(b0 + b5) / (1 + exp(b0 + b5))
+  r3r3  = exp(b0 + b6) / (1 + exp(b0 + b6))
+  
+  
+  # Calculate all metrics for each R allele for each boot
+  # For R1
+  ss_sr1_diff = ss - sr1  # Difference between SS and SR1
+  ss_r1r1_diff = ss - r1r1  # Difference between SS and R1R1
+  sr1_r1r1_diff = sr1 - r1r1  # Difference between SR1 and R1R1 (CORRECTED)
+  dev.add.r1 = sr1 - (ss + r1r1)/2  # Deviation from additivity
+  s.r1 = (r1r1 - ss)/ss  # Selection coefficient
+  h.r1 = (sr1 - ss)/(r1r1 - ss)  # Dominance coefficient 
+  
+  
+  # For R2
+  ss_sr2_diff = ss - sr2
+  ss_r2r2_diff = ss - r2r2
+  sr2_r2r2_diff = sr2 - r2r2
+  dev.add.r2 = sr2 - (ss + r2r2)/2
+  s.r2 = (r2r2 - ss)/ss
+  h.r2 = (sr2 - ss)/(r2r2 - ss)
+ 
+  
+  # For R3
+  ss_sr3_diff = ss - sr3
+  ss_r3r3_diff = ss - r3r3
+  sr3_r3r3_diff = sr3 - r3r3
+  dev.add.r3 = sr3 - (ss + r3r3)/2
+  s.r3 = (r3r3 - ss)/ss
+  h.r3 = (sr3 - ss)/(r3r3 - ss) 
+  
+  # Return with explicit names
+  result_vector = c(r1r1, r2r2, r3r3, sr1, sr2, sr3, ss, 
+                   dev.add.r1, dev.add.r2, dev.add.r3,
+                   s.r1, s.r2, s.r3,
+                   h.r1, h.r2, h.r3,
+                   ss_sr1_diff, ss_sr2_diff, ss_sr3_diff,
+                   ss_r1r1_diff, ss_r2r2_diff, ss_r3r3_diff,
+                   sr1_r1r1_diff, sr2_r2r2_diff, sr3_r3r3_diff)
+  
+  names(result_vector) = c("R1R1", "R2R2", "R3R3","SR1", "SR2", "SR3", "SS",
+                          "DevAdd_R1", "DevAdd_R2", "DevAdd_R3",
+                          "S_R1", "S_R2", "S_R3",
+                          "H_R1", "H_R2", "H_R3",
+                          "diff_SS.SR1", "diff_SS.SR2", "diff_SS.SR3",
+                          "diff_SS.R1R1", "diff_SS.R2R2", "diff_SS.R3R3",
+                          "diff_SR1.R1R1", "diff_SR2.R2R2", "diff_SR3.R3R3")
+  return(result_vector)
+}
+
+# run the bootstrap
+set.seed(123)
+nboot=1000
+result = boot(data = data.viability,
+               statistic = metrics.boot,
+               R = nboot)  # R for number of bootstraps
+
+result$t0 # original estimate based on data
+result$t  # boot samples estimates
+
+summary(result)
+tidy(result)
+```
+
+```{r}
+### Viability ###
+
+# Report the original estimate (result$t0) based on the data  
+# Use the 2.5% and 97.5% quantiles of the bootstrap distribution (result$t) for the 95% ci
+
+# Process bootstrap results into a single LD50 table
+viability.results = function(result) {
+  # Define genotypes and indices
+  genotypes = c("R1R1", "R2R2", "R3R3", "SR1", "SR2", "SR3", "SS")
+  viability_indices = 1:7
+  
+  # Process fecundity values
+  viability_table = do.call(rbind, lapply(1:length(genotypes), function(i) {
+    # Extract values
+    original = result$t0[i]
+    boot_samples = result$t[, i]
+    ci = quantile(boot_samples, c(0.025, 0.975))
+    
+    data.frame(
+      Genotype = genotypes[i],
+      Estimate = original,
+      Lower.CI = ci[1],
+      Upper.CI = ci[2]
+    )
+  }))
+  
+  return(viability_table)
+}
+
+# Get the viability data frame
+viability = viability.results(result)
+viability
+```
+
+```{r}
+### DIFFERENCES & METRICS ####
+
+# Report the original estimate (result$t0) based on the data  
+# Use the 2.5% and 97.5% quantiles of the bootstrap distribution (result$t) for the 95% ci
+# Report the p-value calculated from the bootstrap distribution
+
+# First, define the p.value function
+p.value = function(boot_samples, null_value) {
+  p_less = mean(boot_samples <= null_value, na.rm = TRUE)
+  p_greater = mean(boot_samples >= null_value, na.rm = TRUE)
+  return(2 * min(p_less, p_greater)) # which tail is more extreme
+}
+
+# Then define metrics.results
+metrics.results = function(result) {
+  # Define alleles
+  alleles = c("R1", "R2", "R3")
+  
+  # Define all metrics
+  all_metrics = list(
+    
+    # Derived metrics
+    list(type = "DevAdd", name = "Additivity", indices = 8:10, null_value = 0),
+    list(type = "S", name = "Selection coefficient", indices = 11:13, null_value = 0),
+    list(type = "H", name = "Dominance coefficient", indices = 14:16, null_value = 0.5),
+    
+    # Derived differences
+    list(type = "diff_SS.SR", name = "SS-SR difference", indices = 17:19, null_value = 0),
+    list(type = "diff_SS.RR", name = "SS-RR difference", indices = 20:22, null_value = 0),
+    list(type = "diff_SR.RR", name = "SR-RR difference", indices = 23:25, null_value = 0)
+  )
+  
+  # Process metrics
+  metrics_table = do.call(rbind, lapply(1:length(all_metrics), function(m) {
+    metric = all_metrics[[m]]
+    
+    do.call(rbind, lapply(1:length(alleles), function(a) {
+      idx = metric$indices[a]
+      original = result$t0[idx]
+      boot_samples = result$t[, idx]
+      ci = quantile(boot_samples, c(0.025, 0.975), na.rm = TRUE)
+      p_val = p.value(boot_samples, metric$null_value)
+      
+      data.frame(
+        Metric = metric$name,
+        Allele = alleles[a],
+        Estimate = original,
+        Lower.CI = ci[1],
+        Upper.CI = ci[2],
+        p.value = p_val
+      )
+    }))
+  }))
+  
+  # Return the formatted table
+  return(metrics_table)
+}
+
+# Now call metrics.results
+metrics = metrics.results(result)
+metrics[metrics$p.value==0,]$p.value= 1/nboot # this is so that p.value is not 0
+```
+
+# 4. Table for viability
+
+```{r}
+# combine dataframes for the final table
+viability.format = viability %>%
+  rename(Genotype.Allele = Genotype) %>%
+  mutate(Metric = "viability") %>%  
+  dplyr::select(Genotype.Allele, Metric, Estimate, Lower.CI, Upper.CI) %>%
+  mutate(across(where(is.numeric), ~round(., 3))) %>%
+  select(Metric, Genotype.Allele, Estimate, Lower.CI, Upper.CI)
+
+metrics.format =  metrics %>%
+  rownames_to_column(var = "column") %>% separate(column, into = c("Metric", "Genotype.Allele"), sep = "_") %>%
+  dplyr::select(-Allele) %>%
+  mutate(across(where(is.numeric), ~round(., 3)))
+
+all.metrics = bind_rows(viability.format, metrics.format) %>%
+  mutate(Genotype.Allele = factor(Genotype.Allele, 
+                                  levels = c("SS", "SR1", "SR2", "SR3", "R1R1", "R2R2", "R3R3", 
+                                             "SS.SR1","SS.SR2","SS.SR3", "SS.R1R1","SS.R2R2","SS.R3R3", "SR1.R1R1","SR2.R2R2","SR3.R3R3",
+                                             "R1", "R2", "R3")),
+         Metric = factor(Metric, 
+                         levels = c("viability","diff","DevAdd", "S", "H"))) %>%
+  arrange(Metric, Genotype.Allele)
+```
+
+```{r}
+library(kableExtra)
+library(htmltools)
+library(webshot)
+```
+
+```{r}
+all.metrics.table = all.metrics %>%
+  unite(col = "Parameter", Genotype.Allele, Metric, sep = "_") %>%
+  rename(Viability = Estimate) %>%
+  
+  mutate(Parameter = case_when(
+    
+    Parameter == "SS_viability" ~ "SS",
+    Parameter == "SR1_viability" ~ "SR1",
+    Parameter == "R1R1_viability" ~ "R1R1",
+    Parameter == "SR2_viability" ~ "SR2",
+    Parameter == "R2R2_viability" ~ "R2R2",
+    Parameter == "SR3_viability" ~ "SR3",
+    Parameter == "R3R3_viability" ~ "R3R3",
+
+    Parameter == "SS.SR1_diff" ~ "SS vs. SR1",
+    Parameter == "SS.R1R1_diff" ~ "SS vs. R1R1",
+    Parameter == "SR1.R1R1_diff" ~ "SR1 vs. R1R1",
+    Parameter == "SS.SR2_diff" ~ "SS vs. SR2",
+    Parameter == "SS.R2R2_diff" ~ "SS vs. R2R2",
+    Parameter == "SR2.R2R2_diff" ~ "SR2 vs. R2R2",
+    Parameter == "SS.SR3_diff" ~ "SS vs. SR3",
+    Parameter == "SS.R3R3_diff" ~ "SS vs. R3R3",
+    Parameter == "SR3.R3R3_diff" ~ "SR3 vs. R3R3",
+
+    Parameter == "R1_DevAdd" ~ "SR1 - (SS + R1R1)/2 (additivity)",
+    Parameter == "R2_DevAdd" ~ "SR2 - (SS + R2R2)/2 (additivity)",
+    Parameter == "R3_DevAdd" ~ "SR3 - (SS + R3R3)/2 (additivity)",
+
+    Parameter == "R1_S" ~ "(R1R1 - SS) / SS (selection, s)",
+    Parameter == "R2_S" ~ "(R2R2 - SS) / SS (selection, s)",
+    Parameter == "R3_S" ~ "(R3R3 - SS) / SS (selection, s)",
+
+    Parameter == "R1_H" ~ "(SR1 - SS) / (R1R1 - SS) (dominance, h)",
+    Parameter == "R2_H" ~ "(SR2 - SS) / (R2R2 - SS) (dominance, h)",
+    Parameter == "R3_H" ~ "(SR3 - SS) / (R3R3 - SS) (dominance, h)")) %>%
+   #replace NA with -
+  mutate(across(everything(), ~replace(., is.na(.), "-")))
+
+
+table.kable = kable(x = all.metrics.table, digits = 3, align = 'l',
+                       caption = "<b>Effect estimates from logistic model analysis for viability</b>",
+                    row.names = FALSE) %>%
+                       kable_classic(full_width = TRUE, html_font = "Times New Roman", font_size = 16) %>%
+                       kable_styling(latex_options = c("striped", "hold_position"), position = "center") %>%
+                       row_spec(0, bold = TRUE, font_size = 16) %>%  # Make header bold and set font size
+                       row_spec(1:nrow(all.metrics.table), font_size = 16)  # Smaller font for values
+
+
+
+table.kable
+
+# Save the table as an HTML file
+save_kable(table.kable, file = "./tables/table_viability.html")
+
+# Use webshot to convert HTML to PDF
+webshot("./tables/table_viability.html", file = "./tables/table_viability.pdf")
+```
+
+## Data for simulations
+
+```{r}
+table.viability = all.metrics.table%>%
+  
+  filter(Parameter %in% c("SS", "SR1","SR2", "SR3", "R1R1", "R2R2", "R3R3")) %>%
+  
+  dplyr::select(Parameter, Viability)
+
+write_csv(table.viability, "./data/model.viability.0ppm.csv")
+```
+
+## Percent changes between genotypes
+
+Calculate changes between genotypes for each allele
+
+e.g. for R1:
+
+(SR1-SS)/SS x 100
+
+(R1R1-SS)/ SS x100
+
+```{r}
+all.metrics.calc = all.metrics %>%
+  unite(col = "Parameter", Genotype.Allele, Metric, sep = "_") %>%
+  rename(viability = Estimate) %>%
+  
+  mutate(viability.SS = all.metrics %>% filter(Genotype.Allele == "SS" & Metric == "viability") %>% pull(Estimate)) %>%
+
+  # Then calculate the change
+  mutate(change = (viability - viability.SS)/viability.SS * 100)
+```
+
+# 5. Plots
+
+### 5.1 Ace R1 genotype
+
+```{r}
+library(ggtext)
+
+genotype_labels = c("SS","SR1","R1R1")
+
+# Define the custom colors for each genotype
+#genotype_colors = c("#30a4bc", "#30a4bc", "#ffce1b")
+genotype_colors = c("#165094", "#7396BF","#ce8e58")
+
+# Define the shapes for each genotype
+genotype_shapes = c(16, 15, 17)
+
+
+
+R1_viability = ggplot() +
+  
+  annotate("segment", x = 1, xend = 3, 
+           y = all.metrics %>% filter(Genotype.Allele == "SS" & Metric == "viability") %>% pull(Estimate)*100, 
+            yend = all.metrics %>% filter(Genotype.Allele == "R1R1" & Metric == "viability") %>% pull(Estimate)*100,
+           colour = "#ce8e58", size=0.5, alpha=0.5) +
+  
+  # add a line for SS mean
+  geom_hline(yintercept = 89.4, color = "black", linetype = "solid", size = 0.25) +
+ 
+  # This plots individual values for each genotype
+  geom_jitter(data = data.viability %>% filter(Genotype %in% c("SS", "SR1", "R1R1")),
+             aes(x=Genotype, y = Survival, color = Genotype, shape = Genotype), size = 4, alpha = 0.4, width = 0.1) +
+  
+
+  # This plots the mean viability for each genotype
+  geom_point(data = all.metrics %>% filter(Genotype.Allele %in% c("SS","SR1", "R1R1")),
+              aes(x=Genotype.Allele, y = Estimate*100, color = Genotype.Allele, shape = Genotype.Allele), size = 8, alpha = 1) +
+
+  # This plots the confidence interval for each genotype
+  geom_errorbar(data = all.metrics %>% filter(Genotype.Allele %in% c("SS","SR1", "R1R1")),
+                aes(x=Genotype.Allele, ymin = Lower.CI*100, ymax = Upper.CI*100,
+                    color = Genotype.Allele), width = 0) +
+
+
+  # Map the colors to the genotypes
+  scale_color_manual(values = genotype_colors) +
+  
+  # Map the shapes to the genotypes
+  scale_shape_manual(values = genotype_shapes) +
+  
+  # Add the s and h coefficients for R1
+  geom_richtext(aes(x = 0.7, y = 120, 
+                label = "*s* = -0.15 (-0.19, -0.09)*** <br> *h* = 0.52 (-0.08, 0.60)"), 
+            size = 8, hjust = 0, vjust = 1, 
+            fill = NA, label.color = NA) +
+  
+  scale_y_continuous(breaks = c(40, 50, 60, 70, 80, 90, 100), 
+                   limits = c(40, 120)) +
+  
+  scale_x_discrete(labels = genotype_labels) +
+  
+  labs(x = "", y = "Viability (%)") +
+  
+  
+  theme_classic() +
+  
+  theme(
+     panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+ #   panel.background= element_rect(color ="#FCCC1A", size = 2),
+    
+    # Increase the size of the axis titles
+    axis.title.y = element_text(size = 24),
+
+    # Increase the size of the axis tick labels
+    axis.text.x = element_text(size = 22),
+    axis.text.y = element_text(size = 20),
+ 
+    # No legend
+    legend.position = "none")
+    
+  
+
+R1_viability
+
+ggsave("./plots/R1_viability.png",R1_viability, width = 5 , height = 5)
+```
+
+### 5.2 Ace R2 genotype
+
+```{r}
+genotype_labels = c("SS","SR2","R2R2")
+
+# Define the custom colors for each genotype
+#genotype_colors = c("#30a4bc", "#30a4bc", "#ec4176")
+genotype_colors = c("#165094", "#165094","#e1615e")
+
+# Define the shapes for each genotype
+genotype_shapes = c(16, 15, 17)
+
+
+
+R2_viability = ggplot() +
+  
+  annotate("segment", x = 1, xend = 3, 
+           y = all.metrics %>% filter(Genotype.Allele == "SS" & Metric == "viability") %>% pull(Estimate)*100, 
+            yend = all.metrics %>% filter(Genotype.Allele == "R2R2" & Metric == "viability") %>% pull(Estimate)*100,
+           colour = "#e1615e", size=0.5, alpha=0.5) +
+  
+  # add a line for SS mean
+  geom_hline(yintercept = 89.4, color = "black", linetype = "solid", size = 0.25) +
+ 
+  # This plots individual values for each genotype
+  geom_jitter(data = data.viability %>% filter(Genotype %in% c("SS", "SR2", "R2R2")),
+             aes(x=Genotype, y = Survival, color = Genotype, shape = Genotype), size = 4, alpha = 0.4, width = 0.1) +
+  
+
+  # This plots the mean viability for each genotype
+  geom_point(data = all.metrics %>% filter(Genotype.Allele %in% c("SS","SR2", "R2R2")),
+              aes(x=Genotype.Allele, y = Estimate*100, color = Genotype.Allele, shape = Genotype.Allele), size = 8, alpha = 1) +
+
+  # This plots the confidence interval for each genotype
+  geom_errorbar(data = all.metrics %>% filter(Genotype.Allele %in% c("SS","SR2", "R2R2")),
+                aes(x=Genotype.Allele, ymin = Lower.CI*100, ymax = Upper.CI*100,
+                    color = Genotype.Allele), width = 0) +
+
+
+  # Map the colors to the genotypes
+  scale_color_manual(values = genotype_colors) +
+  
+  # Map the shapes to the genotypes
+  scale_shape_manual(values = genotype_shapes) +
+  
+  # Add the s and h coefficients for R2
+  geom_richtext(aes(x = 0.7, y = 120, 
+                label = "*s* = -0.17 (-0.27, -0.09)*** <br> *h* = 0.20 (-0.15, 0.44)*"), 
+            size = 8, hjust = 0, vjust = 1, 
+            fill = NA, label.color = NA) +
+  
+  
+  scale_y_continuous(breaks = c(40, 50, 60, 70, 80, 90, 100), 
+                   limits = c(40, 120)) +
+  
+  scale_x_discrete(labels = genotype_labels) +
+  
+  labs(x = "", y = "Viability (%)") +
+  
+  
+  theme_classic() +
+  
+  theme(
+     panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+ #   panel.background= element_rect(color ="#FCCC1A", size = 2),
+    
+    # Increase the size of the axis titles
+    axis.title.y = element_text(size = 24),
+
+    # Increase the size of the axis tick labels
+    axis.text.x = element_text(size = 22),
+    axis.text.y = element_text(size = 20),
+ 
+    # No legend
+    legend.position = "none")
+    
+  
+
+R2_viability
+
+ggsave("./plots/R2_viability.png",R2_viability, width = 5 , height = 5)
+```
+
+### 5.3 Ace R3 genotype
+
+```{r}
+genotype_labels = c("SS","SR3","R3R3")
+
+# Define the custom colors for each genotype
+#genotype_colors = c("#30a4bc", "#97D1DD",  "#782e6e")
+genotype_colors = c("#165094", "#165094", "#702771")
+
+# Define the shapes for each genotype
+genotype_shapes = c(16, 15, 17)
+
+
+
+R3_viability = ggplot() +
+  
+  annotate("segment", x = 1, xend = 3, 
+           y = all.metrics %>% filter(Genotype.Allele == "SS" & Metric == "viability") %>% pull(Estimate)*100, 
+            yend = all.metrics %>% filter(Genotype.Allele == "R3R3" & Metric == "viability") %>% pull(Estimate)*100,
+           colour = "#782e6e", size=0.5, alpha=0.5) +
+  
+  # add a line for SS mean
+  geom_hline(yintercept = 89.4, color = "black", linetype = "solid", size = 0.25) +
+ 
+  # This plots individual values for each genotype
+  geom_jitter(data = data.viability %>% filter(Genotype %in% c("SS", "SR3", "R3R3")),
+             aes(x=Genotype, y = Survival, color = Genotype, shape = Genotype), size = 4, alpha = 0.4, width = 0.1) +
+  
+
+  # This plots the mean viability for each genotype
+  geom_point(data = all.metrics %>% filter(Genotype.Allele %in% c("SS","SR3", "R3R3")),
+              aes(x=Genotype.Allele, y = Estimate*100, color = Genotype.Allele, shape = Genotype.Allele), size = 8, alpha = 1) +
+
+  # This plots the confidence interval for each genotype
+  geom_errorbar(data = all.metrics %>% filter(Genotype.Allele %in% c("SS","SR3", "R3R3")),
+                aes(x=Genotype.Allele, ymin = Lower.CI*100, ymax = Upper.CI*100,
+                    color = Genotype.Allele), width = 0) +
+
+
+  # Map the colors to the genotypes
+  scale_color_manual(values = genotype_colors) +
+  
+  # Map the shapes to the genotypes
+  scale_shape_manual(values = genotype_shapes) +
+  
+  # Add the s and h coefficients for R3
+  geom_richtext(aes(x = 0.7, y = 120, 
+                label = "*s* = -0.15 (-0.17, -0.08)*** <br> *h* = 0.50 (-0.12, 0.61)"), 
+            size = 8, hjust = 0, vjust = 1, 
+            fill = NA, label.color = NA) +
+  
+  
+  scale_y_continuous(breaks = c(40, 50, 60, 70, 80, 90, 100), 
+                   limits = c(40, 120)) +
+  
+  scale_x_discrete(labels = genotype_labels) +
+  
+  labs(x = "", y = "Viability (%)") +
+  
+  
+  theme_classic() +
+  
+  theme(
+     panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+ #   panel.background= element_rect(color ="#FCCC1A", size = 2),
+    
+    # Increase the size of the axis titles
+    axis.title.y = element_text(size = 24),
+
+    # Increase the size of the axis tick labels
+    axis.text.x = element_text(size = 22),
+    axis.text.y = element_text(size = 20),
+ 
+    # No legend
+    legend.position = "none")
+    
+  
+
+R3_viability
+
+ggsave("./plots/R3_viability.png",R3_viability, width = 5 , height = 5)
+```
+
+# 6. References
+
+Regression with categorical variable:
+
+<https://www.youtube.com/watch?v=9yTui_LoSOc>
+
+<http://www.sthda.com/english/articles/40-regression-analysis/163-regression-with-categorical-variables-dummy-coding-essentials-in-r/>
