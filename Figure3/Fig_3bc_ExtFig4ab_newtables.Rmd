@@ -1,0 +1,1340 @@
+---
+title: "Track frequencies of sensitive and resistant Ace alleles in the evolving populations over time"
+output: html_document
+date: "2023-10-28"
+---
+
+## 1 Data Description
+
+-   The SNP table for the inbred lines used in Orchard 2021 can be found in the Google Drive in this link:
+
+    <https://drive.google.com/drive/u/0/folders/1gw2rLUUoO_AT9DdcfINohVPSwA61vHLO>
+
+    In the SNP dataframe, **columns** represent the inbred lines while **rows** represent the biallelic sites across the 3R chromosome.
+
+-   The haf files for the Orchard 2021 can be found in the Google Drive in this link: <https://drive.google.com/drive/u/0/folders/1uAzkkZb-G8M5tUZdQI081lPTm2anhKn2>
+
+    In each HAF dataframe, **columns** represent the inbred lines in the order of the SNP table while **rows** represent the window we have estimation of frequency based on HAF. Windows shift by 1/10.
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(Rmisc)
+```
+
+## 2.1 Ace resistance mutations in inbred lines
+
+In the orchard 2014 experiment, the *Drosophila melanogaster* reference genome v5.39 with BWA was used to estimate allele frequencies (as in Bergland et al., 2014). In the Orchard 2021 experiment, we also use the coordinate from v5.39. Ace is located in the reverse strand.
+
+-   The coordinates for the Ace resistance mutations are chr3R: 9069721 (I161V), chr3R:9069408 (G265A), chr3R: 9069054 (F330Y), and chr3R:9063921 (G368A) using the reference genome v 5.39
+
+-   Which lines carry the resistance mutations?
+
+Reshape SNP table to have only the positions for the resistance mutations for each inbred line
+
+```{r}
+chrom3R = fread("./data/inbredv2_withHets.orch2021.3R.snpTable.npute")
+
+chrom3R.Ace = chrom3R %>%
+  
+  # Filter rows based on the resistance mutation in column '3R' which corrensponds to resistance positions
+  filter(`3R` %in% c(9069721, 9069408, 9069054, 9063921)) %>%
+  
+  # Transpose the resulting data frame
+  t() %>%
+  
+# Convert the transposed data frame to a regular data frame
+  as.data.frame() %>%
+  
+# Set the column names based on the values from the first row
+  setNames(unlist(.[1,])) %>%
+  
+# Convert the row names to a new column named "Inbred_Line_ID"
+  rownames_to_column(var = "Inbred_Line_ID") %>%
+
+# filter position line 
+  filter(!Inbred_Line_ID == "3R") %>%
+  
+# Select only the desired columns 'Inbred_Line_ID', '9069721', '9069408', '9069054', and '9063921'
+  select(Inbred_Line_ID, `9069721`, `9069408`, `9069054`, `9063921`)
+
+# Concatenate values from columns '9069721', '9069408', '9069054', and '9063921' into the new column 'Haplotype'
+
+chrom3R.Ace$Haplotype = paste(chrom3R.Ace$`9069721`, chrom3R.Ace$`9069408`, chrom3R.Ace$`9069054`, chrom3R.Ace$`9063921`, sep = "") 
+  
+# Get unique haplotypes
+unique_haplotypes = unique(chrom3R.Ace$Haplotype)
+
+# Mutate 'Haplotype.aa' column based on conditions
+chrom3R.Ace.Haplotype = chrom3R.Ace %>%
+   mutate(Haplotype.aa = case_when(
+    Haplotype == "TCAC" ~ "IGFG.IGFG",
+    Haplotype == "CSWS" ~ "VGFA.VAYG",
+    Haplotype == "CCAS" ~ "VGFG.VGFA",
+    Haplotype == "TCWC" ~ "IGFG.IGYG",
+    Haplotype == "CGTC" ~ "VAYG.VAYG",
+    Haplotype == "CCAC" ~ "VGFG.VGFG",
+    Haplotype == "CCAG" ~ "VGFA.VGFA",
+    Haplotype == "YSWS" ~ "IGFG.VAYA",
+    Haplotype == "TCAS" ~ "IGFG.IGFA",
+    Haplotype == "YSAC" ~ "IGFG.VAFG",
+    Haplotype == "YSWC" ~ "IGFG.VAYG",
+    Haplotype == "YCAS" ~ "IGFG.VGFA",
+    Haplotype == "CSWC" ~ "VGFG.VAYG"
+  )) %>%
+
+# Remove the Reference line from the table 
+  filter(!Inbred_Line_ID == "Ref") %>%
+
+# Select lines & haplotypes
+  select(Inbred_Line_ID, Haplotype.aa)
+
+# Summarize the counts for each 'Haplotype.aa'
+chrom3R.Ace.summary = chrom3R.Ace.Haplotype %>%
+  dplyr::group_by(Haplotype.aa) %>%
+  dplyr::summarize(count = n())
+```
+
+## 2.2 Ace allele frequencies in inbred lines
+
+```{r}
+# Count allele frequencies for figure 1
+allele.count.Ace = chrom3R.Ace.Haplotype %>%
+  
+  # Separate the Haplotype.aa column into two new columns (Allele.1 and Allele.2)
+  separate(Haplotype.aa, into = c("Allele.1", "Allele.2"), sep = "\\.") %>%
+  
+  # Pivot the data into a longer format to have a single column for haplotypes
+  pivot_longer(cols = Allele.1:Allele.2, 
+               names_to = "Allele", 
+               values_to = "Haplotype") %>%
+  
+  # Count occurrences of each haplotype
+  dplyr::count(Haplotype) %>%
+  
+  # Calculate frequency of each haplotype
+  mutate(frequency = round(n / sum(n) * 100, 2))
+
+# View the result
+allele.count.Ace
+```
+
+## 3.1 Frequency of each founder haplotype block in evolving populations around Ace region
+
+Estimate the relative frequency of each of the 76 founder haplotype block surrounding the Ace region per cage per timepoint
+
+```{r}
+# The variable colnames_SNPtable will be used to rename the columns in each of the haf files
+colnames_SNPtable = colnames(chrom3R[,3:ncol(chrom3R)])
+
+
+# Step 1: Get the list of haf files to be analyzed in the directory
+
+## Set the folder path
+folder_path = "./data/Freqs"  
+
+## List all files in the Freqs folder
+all_files = list.files(path = folder_path, full.names = TRUE)
+
+## Filter files to include only those containing "3R.freqs" and exclude "rep" or "Rd1_Rd3"
+haf_files = all_files[grepl("3R.freqs", all_files) & !grepl("rep", all_files) & !grepl("Rd", all_files) & !grepl("TechRep", all_files)]
+
+
+# Step 2: Use lapply to read and process each haf file. For each haf file, rename columns based on SNP table & estimate the relative frequency of each of the founder haplotypes surrounding the Ace region per cage per timepoint
+
+haplo_freq = lapply(haf_files, function(haf_file) {
+  
+  # Inside the function, read the .freq file
+  data = read.table(haf_file)
+  
+  data = data %>%
+  
+  #Select the 10 windows that cover the haplotype of interest
+  dplyr::filter(V3 >= 9063921) %>% filter(V2 <= 9069721) %>%  
+    
+  #Select unique to remove duplicated rows -CHECK WITH MARK
+
+  #Remove the first 3 columns (chrom, start, end)
+  dplyr::select(-c(1:3)) %>% 
+
+  #Calculate the mean for each column (average across windows) ignoring NAs 
+  dplyr::summarise(across(everything(), ~mean(., na.rm = TRUE))) 
+  
+  #Rename columns based on SNP table
+  colnames(data) = colnames_SNPtable  
+  
+  data %>%
+  # Create a new column called "sample" with the file name
+  dplyr::mutate(sample = basename(haf_file), .before = 1) %>%
+
+  # Separate sample info into columns
+  separate(sample, into = c("tpt", "generation", "cage", "other"), sep = "_") %>%
+  dplyr::select(!other) %>%
+  dplyr::mutate(tpt = as.numeric(gsub("^tp", "", tpt))) %>%
+  dplyr::mutate(treatment = sub("\\d+", "", cage), .after = cage) %>%
+  
+  # Return the modified data frame
+  return(data)
+})
+
+# Combine the list of data frames into a single data frame
+combined.data = do.call(rbind, haplo_freq) 
+
+#Sanity check that across rows, frequency of all founder haplotype blocks add up to ~1.
+# sums = rowSums(combined.data[, 5:ncol(combined.data)])
+
+```
+
+## 3.2 Frequency of each Ace allele in evolving populations
+
+Estimate the relative frequency of each of the Ace haplotypes per cage per timepoint
+
+```{r}
+# Group the inbred lines by haplotype and summarize names as a vector
+grouped_chrom3R.Ace.Haplotype = chrom3R.Ace.Haplotype %>%
+  dplyr::group_by(Haplotype.aa) %>%
+  dplyr::summarize(names_vector = paste(Inbred_Line_ID, collapse = ", "))
+
+#grouped_chrom3R.Ace.Haplotype$names_vector
+
+# Estimate Ace haplotypes in each cage per timepoint
+haplotypes.Ace = combined.data %>%
+  
+  dplyr::mutate(IGFG = `12LN6-41_B47`/2 +`12LN10-32`/2 + `12LN10-38`/2 + `12LN6-4_B64`/2 + `12LN10-89`/2 + `LNPA-29_SP`/2 + `LNPA-36`/2 + `LNPA-43_SP`/2 + `12LN10-13` + `12LN10-23` + `12LN10-29` + `12LN10-57` + `12LN10-59` + `12LN10-65` + `12LN10-67` + `12LN10-70` + `12LN10-80`+ `12LN10-82` + `12LN10-83` + `12LN10-84` + `12LN10-86` + `12LN10-96` + `12LN10-97` + `12LN6-12_B62` + `12LN6-16_B78` + `12LN6-28_B69` + `12LN6-2_B71` + `12LN6-30_B66` + `12LN6-31_B21` + `12LN6-49_B9` + `12LN6-50_B31` + `12LN6-66_B2` + `12LN6-70_B33` + `12LN6-92_B3` + `LNPA-11` + `LNPA-2_SP` + `LNPA-3` + `LNPA-31` + `LNPA-34` + `LNPA-38` + `LNPA-44` + `LNPA-47_SP` + `LNPA-58_SP` + `LNPA-61` + `LNPA-62` + `LNPA-65_SP` + `LNPA-66` + `LNPA-77` + `LNPA-79` + `LNPA-7_SP` + `LNPA-8_SP` + `LNPA-9`) %>%
+  
+  dplyr::mutate(VGFG = `LNPA-85`/2 + `12LN10-40` + `12LN6-79_B81` + `12LN6-86_B29` + `LNPA-53` + `LNPA-5_SP`) %>%
+  
+  dplyr::mutate(VGFA = `LNPA-36`/2 + `LNPA-43_SP`/2 + `12LN10-10`/2 + `12LN10-12`/2 + `12LN10-71_B` + `12LN6-15_B41` + `LNPA-14` + `LNPA-15_12LN-15` + `LNPA-17` + `LNPA-40` + `LNPA-75_SP` + `LNPA-87`) %>%
+  
+  dplyr::mutate(VAYG = `LNPA-29_SP`/2 + `12LN10-10`/2 + `LNPA-85`/2 + `12LN10-35` + `12LN10-43`+ `12LN10-95` + `12LN6-45_B26` + `12LN6-46_B37` + `12LN6-82_B4` + `12LN6-94_B19` + `LNPA-37`) %>%
+  
+  dplyr::mutate(IGFA = `12LN6-41_B47`/2 ) %>%
+  
+  dplyr::mutate(IGYG = `12LN10-32`/2 + `12LN10-38`/2) %>%
+  
+  dplyr::mutate(VAFG = `12LN6-4_B64`/2 )  %>%
+  
+  dplyr::mutate(VAYA = `12LN10-89`/2) %>%
+  
+  dplyr::select(tpt, generation,cage, treatment, IGFG,VGFG,VGFA,VAYG,IGFA,IGYG,VAFG,VAYA)
+
+unique(haplotypes.Ace$tpt)
+```
+
+## 3.3 Ace allele data
+
+### 3.3.1 Data description
+
+The Ace allele data consists of repeated measurements with a hierarchical/nested structure:
+
+-   Level 1 = Timepoint (TP) (repeated measures)
+-   Level 2 = Treatment (E no malathion/not-treated, P with malathion/treated)
+-   Level 3 = Ace alleles (IGFG, VGFG, VGFA, VAYG)
+-   Level 4 = Treatment Replication (E1-E10 cages, P1 - P10 cages)
+
+```{r}
+main.haplotypes.Ace = haplotypes.Ace %>%
+  
+  #keep only haplotype with frequencies > 0.001
+  dplyr::select(tpt, generation,cage, treatment, IGFG,VGFG,VGFA,VAYG) %>%
+
+  #add a column with Date information for each tpt - the tpts are based on Mark's system of counting timepoints
+  mutate(Date = case_when(
+    tpt == 1 ~ as.Date("2021-07-13"),
+    tpt == 2 ~ as.Date("2021-07-20"),
+    tpt == 3 ~ as.Date("2021-07-26"),
+    tpt == 4 ~ as.Date("2021-08-04"),
+    tpt == 5 ~ as.Date("2021-08-10"),
+    tpt == 6 ~ as.Date("2021-08-17"),
+    tpt == 7 ~ as.Date("2021-08-24"),
+    tpt == 9 ~ as.Date("2021-09-07"),
+    tpt == 10 ~ as.Date("2021-09-21"),
+    tpt == 11 ~ as.Date("2021-10-20"),
+    tpt == 13 ~ as.Date("2021-12-22"),
+    TRUE ~ as.Date(NA)
+  )) %>%
+
+  #filter only tpts that there are matched data for E and P cages
+  filter(tpt %in% c(1,3,5,7,9,10,11,13)) %>%
+  
+  # re-number tpts based on Marianna's system of counting 
+  # turn the tpt column into numeric and re-name tpt to have continuous numbers
+   mutate(tpt = case_when( 
+    tpt == "1" ~ 1, 
+    tpt == "3" ~ 2, 
+    tpt == "5" ~ 3, 
+    tpt == "7" ~ 4, 
+    tpt == "9" ~ 5, 
+    tpt == "10" ~ 6, 
+    tpt == "11" ~ 7, 
+    tpt == "13" ~ 8, TRUE ~ as.numeric(tpt))) %>%
+  
+  #filter I treatment
+  filter(! treatment == "I") %>%
+  
+  # remove E11 and E12 to have balanced data between E and P cages
+  filter(!cage %in% c("E11", "E12")) %>%
+  
+  # remove generation column
+  select(-generation) %>%
+
+  # use pivot_wider to go from long to wide format
+    pivot_longer(cols = IGFG:VAYG,
+               names_to = "haplotype_class", 
+               values_to = "frequency") %>%
+  
+  # level the haplotypes 
+    mutate(haplotype_class = factor(haplotype_class, levels = c("IGFG", "VGFG", "VGFA", "VAYG")))
+
+
+main.haplotypes.Ace
+
+# Save main.haplotypes.Ace to a CSV file - I need this for modeling
+write_csv(main.haplotypes.Ace, "./AceHaplo_freq.csv")
+```
+
+### 3.3.2 Summary statistics
+
+```{r}
+# Calculate summary statistics for P cages
+main.haplotypes.Ace.summary.P = main.haplotypes.Ace %>%
+    dplyr::group_by(haplotype_class, treatment, Date) %>%
+    dplyr::summarize(mean_frequency = mean(frequency), replicates = n(), sd = sd(frequency), se = sd / sqrt(10), .groups = "keep") %>%
+    dplyr::filter(treatment == "P")
+
+# Calculate summary statistics for E cages
+main.haplotypes.Ace.summary.E = main.haplotypes.Ace %>%
+    dplyr::group_by(haplotype_class, treatment, Date) %>%
+    dplyr::summarize(mean_frequency = mean(frequency), replicates = n(), sd = sd(frequency), se = sd / sqrt(10), .groups = "keep") %>%
+    dplyr::filter(treatment == "E")
+```
+
+## 3.4 Ace allele data: Plot
+
+```{r}
+library(ggpubr) 
+library(ggthemes)
+```
+
+### 3.4.1 Malathion-treated populations
+
+```{r}
+# defining the maximum and minimum values for the left axis
+max_left_y = 1
+min_left_y = 0
+
+# Define the custom colors for each haplotype
+haplotype_labels = c("S","R1", "R2", "R3")
+
+#haplotype_values = c("#30A4BC","#ffce1b","#EC4176", "#782E6E")
+haplotype_values = c("#194f94","#ce8e59","#e1625e", "#702771")
+
+# # Define p-values and their positions for IGFG
+# p_values.IGFG = c("***", "*")  # Adjust as needed
+# p_position.IGFG = data.frame(
+#   x = as.Date(c("2021-07-26", "2021-09-22")), 
+#   median = as.Date(c("2021-08-07", "2021-10-24")),
+#   xend = as.Date(c("2021-09-20", "2021-12-22")), # Dates for p-value annotation
+#   y = c(0.95, 0.95)  # y-coordinates for placing the p-values
+# )
+# 
+# # Define p-values and their positions for VGFG
+# p_values.VGFG = c("***", "")  # Adjust as needed
+# p_position.VGFG = data.frame(
+#   x = as.Date(c("2021-07-26", "2021-09-22")), 
+#   median = as.Date(c("2021-08-07", "2021-10-24")),
+#   xend = as.Date(c("2021-09-20", "2021-12-22")), # Dates for p-value annotation
+#   y = c(0.9, 0.9)  # y-coordinates for placing the p-values
+# )
+
+# # Define p-values and their positions for VGFA
+# p_values.VGFA = c("***", "*")  # Adjust as needed
+# p_position.VGFA = data.frame(
+#   x = as.Date(c("2021-07-26", "2021-09-22")), 
+#   median = as.Date(c("2021-08-07", "2021-10-24")),
+#   xend = as.Date(c("2021-09-20", "2021-12-22")), # Dates for p-value annotation
+#   y = c(0.85, 0.85)  # y-coordinates for placing the p-values
+# )
+# 
+# # Define p-values and their positions for VAYG
+# p_values.VAYG = c("***", "***")  # Adjust as needed
+# p_position.VAYG = data.frame(
+#   x = as.Date(c("2021-07-26", "2021-09-22")), 
+#   median = as.Date(c("2021-08-07", "2021-10-24")),
+#   xend = as.Date(c("2021-09-20", "2021-12-22")), # Dates for p-value annotation
+#   y = c(0.8, 0.8)  # y-coordinates for placing the p-values
+# )
+
+# Define the linetypes for the lines
+linetypes <- c(1, 1, 1, 1)
+
+
+  haplotypes.Ace.plot = ggplot() +
+    
+  # Annotate to indicate when malathion was applied
+  annotate("rect", xmin=as.Date("2021-07-21"), xmax=as.Date("2021-08-25"), ymin=-Inf, ymax=Inf, alpha=0.2, fill="#FFA500") +
+  annotate("rect", xmin=as.Date("2021-08-25"), xmax=as.Date("2021-09-06"), ymin=-Inf, ymax=Inf, alpha=0.4, fill="#FFA500") +
+  
+  #this adds text when malathion was applied
+  annotate("text", x = as.Date("2021-08-09"), y = 0.95, label = "2.5\nppm", size = 5, color = "black")+
+  annotate("text", x = as.Date("2021-08-31"), y = 0.95, label = "7.5\nppm", size = 5, color = "black") +  
+      
+  # plot the haplotype frequency data
+    
+  #this plots for haplotype frequencies of individual cages across time points in P cages
+  geom_line(data = main.haplotypes.Ace %>% filter(treatment == "P"), 
+          aes(x = Date, y = frequency, group = interaction(cage, haplotype_class), color = haplotype_class),
+          linewidth = 0.5, alpha = 0.6) +
+    
+  #this plots for mean haplotype frequency across time points in P cages
+  geom_line(data=main.haplotypes.Ace.summary.P, aes(x = Date, y = mean_frequency,group= haplotype_class, color= haplotype_class), linewidth= 1.5, alpha =1) +
+  
+  #this plots for mean haplotype frequency across time points in P cages
+  geom_point(data=main.haplotypes.Ace.summary.P, aes(x = Date, y = mean_frequency,group= haplotype_class, color= haplotype_class), size= 3, alpha =1) +
+    
+  #this plots for standard error of cages across time points
+  geom_errorbar(data=main.haplotypes.Ace.summary.P, aes(x=Date,ymin=mean_frequency-se, ymax=mean_frequency + se, color= haplotype_class), width = 0.1) +
+  
+  scale_color_manual( name = "",
+    labels = haplotype_labels,
+    values = haplotype_values) +
+  
+  scale_y_continuous( name = expression(italic("Ace") ~ allele ~ frequency),
+                      breaks=seq(min_left_y, max_left_y, 0.2), 
+                      limits = c(-0.15, 1))+
+  
+  scale_x_date(limits = as.Date(c("2021-06-21","2021-12-22")))+
+  xlab("") + # removes the x axis title
+  
+
+  # this code annotates the resistance plot with the generations
+   annotate("rect", 
+           xmin = c(as.Date("2021-06-21"), as.Date("2021-07-01"), as.Date("2021-08-01"), as.Date("2021-09-01"), as.Date("2021-10-01"), as.Date("2021-11-01"), as.Date("2021-12-01")), 
+           xmax = c(as.Date("2021-07-01"), as.Date("2021-08-01"), as.Date("2021-09-01"), as.Date("2021-10-01"), as.Date("2021-11-01"), as.Date("2021-12-01"), as.Date("2021-12-22")), 
+           ymin = -0.15, 
+           ymax = -0.05, 
+           color = "black", 
+           alpha = 0)+
+  
+#this adds the labels in the center of the rectangles
+  annotate("text", x = c(as.Date("2021-06-26"), as.Date("2021-07-17"), as.Date("2021-08-17"), as.Date("2021-09-17"), as.Date("2021-10-17"), as.Date("2021-11-17"), as.Date("2021-12-10")), 
+           y = -0.1, 
+           label = c("1", "2-5", "5-8", "8-10", "11-12", "12", "(o)"), size = 5)+
+  
+#this adds the title above the timeline that says "Generations"
+  annotate("text", x = as.Date("2021-09-17"), y = 0.0, label = "Generations", size = 5.5)  +
+  
+  ggtitle("Malathion-treated cages") +
+
+  theme_classic() +
+  
+   theme(
+    # Increase the size of the axis titles
+    axis.title.y = element_text(size = 18),
+    
+    # Increase the size of the title font
+    plot.title = element_text(size = 20, hjust = 0.5),
+    
+    # Increase the size of the axis tick labels
+    axis.text.x = element_text(size = 18),
+    axis.text.y = element_text(size = 16),
+    
+    # Position the legend inside the plot in the upper left hand corner
+    legend.position = c(0.15, 0.99),
+        legend.background = element_rect(fill = "transparent"),
+        legend.justification = c("right", "top"),
+        legend.box.just = "right",
+        legend.margin = margin(3, 3, 3, 3),
+        legend.title = element_text(size = 15),
+        legend.text = element_text(size = 15)
+) 
+    
+  #   # Add p-value annotations for IGFG
+  # geom_segment(data = p_position.IGFG, aes(x = x, xend = xend, y = 0.95, yend = y), color = "#30A4BC", linetype = "solid", size= 0.3, alpha =0.5) +
+  # geom_text(data = p_position.IGFG, aes(x = median, y = 0.9, label = p_values.IGFG), color = "#30A4BC", vjust = -1, size = 5) +
+  # 
+  # 
+  #   # Add p-value annotations for VGFG
+  # geom_segment(data = p_position.VGFG, aes(x = x, xend = xend, y = 0.9, yend = y), color = "#fea993", linetype = "solid", size= 0.3, alpha =0.5) +
+  # geom_text(data = p_position.VGFG, aes(x = median, y = 0.85, label = p_values.VGFG), color = "#fea993", vjust = -1, size = 5) +
+  #   
+  #    # Add p-value annotations for VGFA
+  # geom_segment(data = p_position.VGFA, aes(x = x, xend = xend, y = 0.85, yend = y), color = "#EC4176", linetype = "solid", size= 0.3, alpha =0.5) +
+  # geom_text(data = p_position.VGFA, aes(x = median, y = 0.8, label = p_values.VGFA), color = "#EC4176", vjust = -1, size = 5) +
+  #   
+  #   # Add p-value annotations for VAYG
+  # geom_segment(data = p_position.VAYG, aes(x = x, xend = xend, y = 0.8, yend = y), color = "#782E6E", linetype = "solid", size= 0.3, alpha =0.5) +
+  # geom_text(data = p_position.VAYG, aes(x = median, y = 0.75, label = p_values.VAYG), color = "#782E6E", vjust = -1, size = 5) 
+  
+  
+
+haplotypes.Ace.plot
+
+ggsave("./plots/class_frequency_P.png", width = 8 , height = 5)
+```
+
+### 3.4.1 Malathion-treated populations -new
+
+```{r}
+# defining the maximum and minimum values for the left axis
+max_left_y = 1
+min_left_y = 0
+
+# Define the custom colors for each haplotype
+haplotype_labels = c("S","R1", "R2", "R3")
+
+#haplotype_values = c("#30A4BC","#ffce1b","#EC4176", "#782E6E")
+haplotype_values = c("#194f94","#ce8e59","#e1625e", "#702771")
+
+# # Define p-values and their positions for IGFG
+# p_values.IGFG = c("***", "*")  # Adjust as needed
+# p_position.IGFG = data.frame(
+#   x = as.Date(c("2021-07-26", "2021-09-22")), 
+#   median = as.Date(c("2021-08-07", "2021-10-24")),
+#   xend = as.Date(c("2021-09-20", "2021-12-22")), # Dates for p-value annotation
+#   y = c(0.95, 0.95)  # y-coordinates for placing the p-values
+# )
+# 
+# # Define p-values and their positions for VGFG
+# p_values.VGFG = c("***", "")  # Adjust as needed
+# p_position.VGFG = data.frame(
+#   x = as.Date(c("2021-07-26", "2021-09-22")), 
+#   median = as.Date(c("2021-08-07", "2021-10-24")),
+#   xend = as.Date(c("2021-09-20", "2021-12-22")), # Dates for p-value annotation
+#   y = c(0.9, 0.9)  # y-coordinates for placing the p-values
+# )
+
+# # Define p-values and their positions for VGFA
+# p_values.VGFA = c("***", "*")  # Adjust as needed
+# p_position.VGFA = data.frame(
+#   x = as.Date(c("2021-07-26", "2021-09-22")), 
+#   median = as.Date(c("2021-08-07", "2021-10-24")),
+#   xend = as.Date(c("2021-09-20", "2021-12-22")), # Dates for p-value annotation
+#   y = c(0.85, 0.85)  # y-coordinates for placing the p-values
+# )
+# 
+# # Define p-values and their positions for VAYG
+# p_values.VAYG = c("***", "***")  # Adjust as needed
+# p_position.VAYG = data.frame(
+#   x = as.Date(c("2021-07-26", "2021-09-22")), 
+#   median = as.Date(c("2021-08-07", "2021-10-24")),
+#   xend = as.Date(c("2021-09-20", "2021-12-22")), # Dates for p-value annotation
+#   y = c(0.8, 0.8)  # y-coordinates for placing the p-values
+# )
+
+# Define the linetypes for the lines
+linetypes <- c(1, 1, 1, 1)
+
+
+  haplotypes.Ace.plot = ggplot() +
+    
+  # Annotate to indicate when malathion was applied
+  annotate("rect", xmin=as.Date("2021-07-21"), xmax=as.Date("2021-08-25"), ymin=-Inf, ymax=Inf, alpha=0.2, fill="#FFA500") +
+  annotate("rect", xmin=as.Date("2021-08-25"), xmax=as.Date("2021-09-06"), ymin=-Inf, ymax=Inf, alpha=0.4, fill="#FFA500") +
+  
+  #this adds text when malathion was applied
+  annotate("text", x = as.Date("2021-08-09"), y = 0.95, label = "2.5\nppm", size = 5, color = "black")+
+  annotate("text", x = as.Date("2021-08-31"), y = 0.95, label = "7.5\nppm", size = 5, color = "black") +  
+      
+  # plot the haplotype frequency data
+    
+  #this plots for haplotype frequencies of individual cages across time points in P cages
+  geom_line(data = main.haplotypes.Ace %>% filter(treatment == "P"), 
+          aes(x = Date, y = frequency, group = interaction(cage, haplotype_class), color = haplotype_class),
+          linewidth = 0.5, alpha = 0.6) +
+    
+  #this plots for mean haplotype frequency across time points in P cages
+  geom_line(data=main.haplotypes.Ace.summary.P, aes(x = Date, y = mean_frequency,group= haplotype_class, color= haplotype_class), linewidth= 1.5, alpha =1) +
+  
+  #this plots for mean haplotype frequency across time points in P cages
+  geom_point(data=main.haplotypes.Ace.summary.P, aes(x = Date, y = mean_frequency,group= haplotype_class, color= haplotype_class), size= 3, alpha =1) +
+    
+  #this plots for standard error of cages across time points
+  geom_errorbar(data=main.haplotypes.Ace.summary.P, aes(x=Date,ymin=mean_frequency-se, ymax=mean_frequency + se, color= haplotype_class), width = 0.1) +
+  
+  scale_color_manual( name = "",
+    labels = haplotype_labels,
+    values = haplotype_values) +
+  
+  scale_y_continuous( name = expression(italic("Ace") ~ allele ~ frequency),
+                      breaks=seq(min_left_y, max_left_y, 0.2), 
+                      limits = c(-0.15, 1))+
+  
+  scale_x_date(limits = as.Date(c("2021-06-21","2021-12-22")))+
+  xlab("") + # removes the x axis title
+  
+
+  # this code annotates the resistance plot with the generations
+   annotate("rect", 
+           xmin = c(as.Date("2021-06-21"), as.Date("2021-07-01"), as.Date("2021-08-01"), as.Date("2021-09-01"), as.Date("2021-10-01"), as.Date("2021-11-01"), as.Date("2021-12-01")), 
+           xmax = c(as.Date("2021-07-01"), as.Date("2021-08-01"), as.Date("2021-09-01"), as.Date("2021-10-01"), as.Date("2021-11-01"), as.Date("2021-12-01"), as.Date("2021-12-22")), 
+           ymin = -0.15, 
+           ymax = -0.05, 
+           color = "black", 
+           alpha = 0)+
+  
+#this adds the labels in the center of the rectangles
+  annotate("text", x = c(as.Date("2021-06-26"), as.Date("2021-07-17"), as.Date("2021-08-17"), as.Date("2021-09-17"), as.Date("2021-10-17"), as.Date("2021-11-17"), as.Date("2021-12-10")), 
+           y = -0.1, 
+           label = c("1", "2-5", "5-8", "8-10", "11-12", "12", "(o)"), size = 5)+
+  
+#this adds the title above the timeline that says "Generations"
+  annotate("text", x = as.Date("2021-09-17"), y = 0.0, label = "Generations", size = 5.5)  +
+  
+  # ggtitle("Malathion-treated cages") +
+
+  theme_classic() +
+  
+   theme(
+    # Increase the size of the axis titles
+    axis.title.y = element_text(size = 18),
+    
+    # Increase the size of the title font
+    plot.title = element_text(size = 20, hjust = 0.5),
+    
+    # Increase the size of the axis tick labels
+    axis.text.x = element_text(size = 18),
+    axis.text.y = element_text(size = 16),
+    
+    # Position the legend inside the plot in the upper left hand corner
+    legend.position = c(0.15, 0.99),
+        legend.background = element_rect(fill = "transparent"),
+        legend.justification = c("right", "top"),
+        legend.box.just = "right",
+        legend.margin = margin(3, 3, 3, 3),
+        legend.title = element_text(size = 15),
+        legend.text = element_text(size = 15)
+) 
+    
+  #   # Add p-value annotations for IGFG
+  # geom_segment(data = p_position.IGFG, aes(x = x, xend = xend, y = 0.95, yend = y), color = "#30A4BC", linetype = "solid", size= 0.3, alpha =0.5) +
+  # geom_text(data = p_position.IGFG, aes(x = median, y = 0.9, label = p_values.IGFG), color = "#30A4BC", vjust = -1, size = 5) +
+  # 
+  # 
+  #   # Add p-value annotations for VGFG
+  # geom_segment(data = p_position.VGFG, aes(x = x, xend = xend, y = 0.9, yend = y), color = "#fea993", linetype = "solid", size= 0.3, alpha =0.5) +
+  # geom_text(data = p_position.VGFG, aes(x = median, y = 0.85, label = p_values.VGFG), color = "#fea993", vjust = -1, size = 5) +
+  #   
+  #    # Add p-value annotations for VGFA
+  # geom_segment(data = p_position.VGFA, aes(x = x, xend = xend, y = 0.85, yend = y), color = "#EC4176", linetype = "solid", size= 0.3, alpha =0.5) +
+  # geom_text(data = p_position.VGFA, aes(x = median, y = 0.8, label = p_values.VGFA), color = "#EC4176", vjust = -1, size = 5) +
+  #   
+  #   # Add p-value annotations for VAYG
+  # geom_segment(data = p_position.VAYG, aes(x = x, xend = xend, y = 0.8, yend = y), color = "#782E6E", linetype = "solid", size= 0.3, alpha =0.5) +
+  # geom_text(data = p_position.VAYG, aes(x = median, y = 0.75, label = p_values.VAYG), color = "#782E6E", vjust = -1, size = 5) 
+  
+  
+
+haplotypes.Ace.plot
+
+ggsave("./plots/class_frequency_P_new.png", width = 7 , height = 4.5)
+```
+
+### 3.4.2 Control populations
+
+```{r}
+# defining the maximum and minimum values for the left axis
+max_left_y = 1
+min_left_y = 0
+
+# Define the custom colors for each haplotype
+haplotype_labels = c("S","R1", "R2", "R3")
+
+#haplotype_values = c("#30A4BC","#ffce1b","#EC4176", "#782E6E")
+haplotype_values = c("#194f94","#ce8e59","#e1625e", "#702771")
+
+
+# Define the linetypes for the lines
+linetypes <- c(1, 1, 1, 1)
+
+
+  haplotypes.Ace.plot = ggplot() +
+    
+  # plot the haplotype frequency data
+    
+  #this plots for haplotype frequencies of individual cages across time points in P cages
+  geom_line(data = main.haplotypes.Ace %>% filter(treatment == "E"), 
+          aes(x = Date, y = frequency, group = interaction(cage, haplotype_class), color = haplotype_class),
+          linewidth = 0.5, alpha = 0.6) +
+    
+  #this plots for mean haplotype frequency across time points in P cages
+  geom_line(data=main.haplotypes.Ace.summary.E, aes(x = Date, y = mean_frequency,group= haplotype_class, color= haplotype_class), linewidth= 1.5, alpha =1) +
+  
+  #this plots for mean haplotype frequency across time points in P cages
+  geom_point(data=main.haplotypes.Ace.summary.E, aes(x = Date, y = mean_frequency,group= haplotype_class, color= haplotype_class), size= 3, alpha =1) +
+    
+  #this plots for standard error of cages across time points
+  geom_errorbar(data=main.haplotypes.Ace.summary.E, aes(x=Date,ymin=mean_frequency-se, ymax=mean_frequency + se, color= haplotype_class), width = 0.1) +
+  
+  scale_color_manual(name = "",
+    labels = haplotype_labels,
+    values = haplotype_values) +
+  
+   scale_y_continuous(name = expression(italic("Ace") ~ allele ~ frequency),
+                      breaks=seq(min_left_y, max_left_y, 0.2), 
+                      limits = c(-0.15, 1))+
+  
+  scale_x_date(limits = as.Date(c("2021-06-21","2021-12-22")))+
+  xlab("") + # removes the x axis title
+  
+
+  # this code annotates the resistance plot with the generations
+   annotate("rect", 
+           xmin = c(as.Date("2021-06-21"), as.Date("2021-07-01"), as.Date("2021-08-01"), as.Date("2021-09-01"), as.Date("2021-10-01"), as.Date("2021-11-01"), as.Date("2021-12-01")), 
+           xmax = c(as.Date("2021-07-01"), as.Date("2021-08-01"), as.Date("2021-09-01"), as.Date("2021-10-01"), as.Date("2021-11-01"), as.Date("2021-12-01"), as.Date("2021-12-22")), 
+           ymin = -0.15, 
+           ymax = -0.05, 
+           color = "black", 
+           alpha = 0)+
+  
+#this adds the labels in the center of the rectangles
+  annotate("text", x = c(as.Date("2021-06-26"), as.Date("2021-07-17"), as.Date("2021-08-17"), as.Date("2021-09-17"), as.Date("2021-10-17"), as.Date("2021-11-17"), as.Date("2021-12-10")), 
+           y = -0.1, 
+           label = c("1", "2-5", "5-8", "8-10", "11-12", "12", "(o)"), size = 5)+
+  
+#this adds the title above the timeline that says "Generations"
+  annotate("text", x = as.Date("2021-09-17"), y = 0.0, label = "Generations", size = 5.5)  +
+  
+  ggtitle("Untreated cages") +
+
+  theme_classic() +
+  
+   theme(
+    # Increase the size of the axis titles
+    axis.title.y = element_text(size = 18),
+    
+    # Increase the size of the title font
+    plot.title = element_text(size = 20, hjust = 0.5),
+    
+    # Increase the size of the axis tick labels
+    axis.text.x = element_text(size = 18),
+    axis.text.y = element_text(size = 16),
+    
+    # Position the legend inside the plot in the upper left hand corner
+    legend.position = c(0.15, 0.99),
+        legend.background = element_rect(fill = "transparent"),
+        legend.justification = c("right", "top"),
+        legend.box.just = "right",
+        legend.margin = margin(3, 3, 3, 3),
+        legend.title = element_text(size = 15),
+        legend.text = element_text(size = 15)
+)
+
+haplotypes.Ace.plot
+
+ggsave("./plots/class_frequency_E.png", width = 8, height = 5)
+```
+
+### 3.4.2 Control populations-new
+
+```{r}
+# defining the maximum and minimum values for the left axis
+max_left_y = 1
+min_left_y = 0
+
+# Define the custom colors for each haplotype
+haplotype_labels = c("S","R1", "R2", "R3")
+
+#haplotype_values = c("#30A4BC","#ffce1b","#EC4176", "#782E6E")
+haplotype_values = c("#194f94","#ce8e59","#e1625e", "#702771")
+
+
+# Define the linetypes for the lines
+linetypes <- c(1, 1, 1, 1)
+
+
+  haplotypes.Ace.plot = ggplot() +
+    
+  # plot the haplotype frequency data
+    
+  #this plots for haplotype frequencies of individual cages across time points in P cages
+  geom_line(data = main.haplotypes.Ace %>% filter(treatment == "E"), 
+          aes(x = Date, y = frequency, group = interaction(cage, haplotype_class), color = haplotype_class),
+          linewidth = 0.5, alpha = 0.6) +
+    
+  #this plots for mean haplotype frequency across time points in P cages
+  geom_line(data=main.haplotypes.Ace.summary.E, aes(x = Date, y = mean_frequency,group= haplotype_class, color= haplotype_class), linewidth= 1.5, alpha =1) +
+  
+  #this plots for mean haplotype frequency across time points in P cages
+  geom_point(data=main.haplotypes.Ace.summary.E, aes(x = Date, y = mean_frequency,group= haplotype_class, color= haplotype_class), size= 3, alpha =1) +
+    
+  #this plots for standard error of cages across time points
+  geom_errorbar(data=main.haplotypes.Ace.summary.E, aes(x=Date,ymin=mean_frequency-se, ymax=mean_frequency + se, color= haplotype_class), width = 0.1) +
+  
+  scale_color_manual(name = "",
+    labels = haplotype_labels,
+    values = haplotype_values) +
+  
+   scale_y_continuous(name = expression(italic("Ace") ~ allele ~ frequency),
+                      breaks=seq(min_left_y, max_left_y, 0.2), 
+                      limits = c(-0.15, 1))+
+  
+  scale_x_date(limits = as.Date(c("2021-06-21","2021-12-22")))+
+  xlab("") + # removes the x axis title
+  
+
+  # this code annotates the resistance plot with the generations
+   annotate("rect", 
+           xmin = c(as.Date("2021-06-21"), as.Date("2021-07-01"), as.Date("2021-08-01"), as.Date("2021-09-01"), as.Date("2021-10-01"), as.Date("2021-11-01"), as.Date("2021-12-01")), 
+           xmax = c(as.Date("2021-07-01"), as.Date("2021-08-01"), as.Date("2021-09-01"), as.Date("2021-10-01"), as.Date("2021-11-01"), as.Date("2021-12-01"), as.Date("2021-12-22")), 
+           ymin = -0.15, 
+           ymax = -0.05, 
+           color = "black", 
+           alpha = 0)+
+  
+#this adds the labels in the center of the rectangles
+  annotate("text", x = c(as.Date("2021-06-26"), as.Date("2021-07-17"), as.Date("2021-08-17"), as.Date("2021-09-17"), as.Date("2021-10-17"), as.Date("2021-11-17"), as.Date("2021-12-10")), 
+           y = -0.1, 
+           label = c("1", "2-5", "5-8", "8-10", "11-12", "12", "(o)"), size = 5)+
+  
+#this adds the title above the timeline that says "Generations"
+  annotate("text", x = as.Date("2021-09-17"), y = 0.0, label = "Generations", size = 5.5)  +
+  
+  # ggtitle("Untreated cages") +
+
+  theme_classic() +
+  
+   theme(
+    # Increase the size of the axis titles
+    axis.title.y = element_text(size = 18),
+    
+    # Increase the size of the title font
+    plot.title = element_text(size = 20, hjust = 0.5),
+    
+    # Increase the size of the axis tick labels
+    axis.text.x = element_text(size = 18),
+    axis.text.y = element_text(size = 16),
+    
+    # Position the legend inside the plot in the upper left hand corner
+    legend.position = c(0.15, 0.99),
+        legend.background = element_rect(fill = "transparent"),
+        legend.justification = c("right", "top"),
+        legend.box.just = "right",
+        legend.margin = margin(3, 3, 3, 3),
+        legend.title = element_text(size = 15),
+        legend.text = element_text(size = 15)
+)
+
+haplotypes.Ace.plot
+
+ggsave("./plots/class_frequency_E_new.png", width = 7, height = 4.5)
+```
+
+## 3.5 Ace allele data: Statistics and modeling
+
+```{r}
+# load packages for statistics 
+library(lme4)
+library(broom)
+library(lmerTest)
+library(effects)
+library(broom.mixed) #tidy methods for extracting model results from lmer() models, namely the tidy() function
+library(sjPlot) # for table preparation
+```
+
+### 3.5.1 Ace alleles in malathion-treated populations
+
+-   Did the frequencies of the sensitive (IGFG) and resistant Ace alleles (VGFG, VGFA, VAYG) change with the insecticide treatment?
+
+Split the dataset in two time periods (during/after treatment) and then fit a linear mixed effects model on each of the Ace alleles (dependent variable) for each time period.
+
+The model structure is:
+
+Allele_frequency = time + (1\|cage)
+
+```{r}
+### IGFG ###
+
+# during treatment TPs: 2-6
+during_treated_IGFG = main.haplotypes.Ace %>% filter(haplotype_class == "IGFG" & treatment == "P" & tpt >= 2 & tpt <=6)
+
+model_during_treated_IGFG = lmer(frequency ~ tpt + (1 |cage), REML=F, data = during_treated_IGFG)
+
+summary(model_during_treated_IGFG)
+tidy(model_during_treated_IGFG)
+
+# after treatment TPs: 6-8
+after_treated_IGFG = main.haplotypes.Ace %>% filter(haplotype_class == "IGFG" & treatment == "P" & tpt >= 6)
+
+model_after_treated_IGFG = lmer(frequency ~ tpt + (1 |cage), REML=F, data = after_treated_IGFG)
+
+summary(model_after_treated_IGFG)
+tidy(model_after_treated_IGFG)
+
+tab_model(model_during_treated_IGFG, model_after_treated_IGFG,
+          pred.labels = c("Intercept", "Time"),  # predictor labels 
+          dv.labels = c("During treatment", "After treatment"),
+          string.p = "p-value",
+          show.stat = TRUE,
+          show.ci = FALSE, 
+          show.se = TRUE,
+          p.style = "scientific",
+          digits.p = 2,
+          title = "Supplementary Table 5.1 Effect of time on S (IGFG) frequency in treated cages from linear mixed-effects model analysis, related to Fig. 3b")
+```
+
+```{r}
+### VGFG ###
+
+# during treatment TPs: 2-6
+during_treated_VGFG = main.haplotypes.Ace %>% filter(haplotype_class == "VGFG" & treatment == "P" & tpt >= 2 & tpt <= 6)
+
+model_during_treated_VGFG = lmer(frequency ~ tpt + (1 | cage), REML=F, data = during_treated_VGFG)
+
+summary(model_during_treated_VGFG)
+tidy(model_during_treated_VGFG)
+
+# after treatment TPs: 6-8
+after_treated_VGFG = main.haplotypes.Ace %>% filter(haplotype_class == "VGFG" & treatment == "P" & tpt >= 6)
+
+model_after_treated_VGFG = lmer(frequency ~ tpt + (1 | cage), REML=F, data = after_treated_VGFG)
+
+summary(model_after_treated_VGFG)
+tidy(model_after_treated_VGFG)
+
+tab_model(model_during_treated_VGFG, model_after_treated_VGFG,
+          pred.labels = c("Intercept", "Time"),  # predictor labels 
+          dv.labels = c("During treatment", "After treatment"),
+          string.p = "p-value",
+          show.stat = TRUE,
+          show.ci = FALSE, 
+          show.se = TRUE,
+          p.style = "scientific",
+          digits.p = 2,
+          title = "Supplementary Table 5.2 Effect of time on R1 (VGFG) frequency in treated cages from linear mixed-effects model analysis, related to Fig. 3b")
+```
+
+```{r}
+### VGFA ###
+
+# during treatment TPs: 2-6
+during_treated_VGFA = main.haplotypes.Ace %>% filter(haplotype_class == "VGFA" & treatment == "P" & tpt >= 2 & tpt <= 6)
+
+model_during_treated_VGFA = lmer(frequency ~ tpt + (1 | cage), REML=F, data = during_treated_VGFA)
+
+summary(model_during_treated_VGFA)
+tidy(model_during_treated_VGFA)
+
+# after treatment TPs: 6-8
+after_treated_VGFA = main.haplotypes.Ace %>% filter(haplotype_class == "VGFA" & treatment == "P" & tpt >= 6)
+
+model_after_treated_VGFA = lmer(frequency ~ tpt + (1 | cage), REML=F, data = after_treated_VGFA)
+
+summary(model_after_treated_VGFA)
+tidy(model_after_treated_VGFA)
+
+tab_model(model_during_treated_VGFA, model_after_treated_VGFA,
+          pred.labels = c("Intercept", "Time"),  # predictor labels 
+          dv.labels = c("During treatment", "After treatment"),
+          string.p = "p-value",
+          show.stat = TRUE,
+          show.ci = FALSE, 
+          show.se = TRUE,
+          p.style = "scientific",
+          digits.p = 2,
+          title = "Supplementary Table 5.3 Effect of time on R2 (VGFA) frequency in treated cages from linear mixed-effects model analysis, related to Fig. 3b")
+```
+
+```{r}
+### VAYG ###
+
+# during treatment TPs: 2-6
+during_treated_VAYG = main.haplotypes.Ace %>% filter(haplotype_class == "VAYG" & treatment == "P" & tpt >= 2 & tpt <= 6)
+
+model_during_treated_VAYG = lmer(frequency ~ tpt + (1 | cage), REML=F, data = during_treated_VAYG)
+
+summary(model_during_treated_VAYG)
+tidy(model_during_treated_VAYG)
+
+# after treatment TPs: 6-8
+after_treated_VAYG = main.haplotypes.Ace %>% filter(haplotype_class == "VAYG" & treatment == "P" & tpt >= 6)
+
+model_after_treated_VAYG = lmer(frequency ~ tpt + (1 | cage), REML=F, data = after_treated_VAYG)
+
+summary(model_after_treated_VAYG)
+tidy(model_after_treated_VAYG)
+
+tab_model(model_during_treated_VAYG, model_after_treated_VAYG,
+          pred.labels = c("Intercept", "Time"),  # predictor labels 
+          dv.labels = c("During treatment", "After treatment"),
+          string.p = "p-value",
+          show.stat = TRUE,
+          show.ci = FALSE, 
+          show.se = TRUE,
+          p.style = "scientific",
+          digits.p = 2,
+          title = "Supplementary Table 5.4 Effect of time on R3 (VAYG) frequency in treated cages from linear mixed-effects model analysis, related to Fig. 3b")
+```
+
+### 3.5.2 Ace alleles in control populations
+
+-   Did the frequencies of the sensitive (IGFG) and resistant Ace alleles (VGFG, VGFA, VAYG) change without the insecticide treatment?
+
+    Fit a linear mixed effects model on each of the Ace alleles (dependent variable) across the experiment.
+
+    The model structure is:
+
+    Allele_frequency = time + (1\|cage)
+
+```{r}
+### IGFG ###
+control_IGFG = main.haplotypes.Ace %>% filter(haplotype_class == "IGFG" & treatment == "E" & tpt >= 2)
+
+model_control_IGFG = lmer(frequency ~ tpt +  (1 |cage), REML=F, data = control_IGFG)
+
+summary(model_control_IGFG)
+tidy(model_control_IGFG)
+
+tab_model(model_control_IGFG,
+          pred.labels = c("Intercept", "Time"),  # predictor labels 
+          dv.labels = c("Beginning of treatment to end of experiment"),
+          string.p = "p-value",
+          show.stat = TRUE,
+          show.ci = FALSE, 
+          show.se = TRUE,
+          p.style = "scientific",
+          digits.p = 2,
+          title = "Supplementary Table 7.1 Effect of time on S (IGFG) frequency in control cages from linear mixed-effects model analysis, related to Fig. 3c")
+
+### VGFG ###
+control_VGFG = main.haplotypes.Ace %>% filter(haplotype_class == "VGFG" & treatment == "E" & tpt >= 2)
+
+model_control_VGFG = lmer(frequency ~ tpt +  (1 |cage), REML=F, data = control_VGFG)
+
+summary(model_control_VGFG)
+tidy(model_control_VGFG)
+
+tab_model(model_control_VGFG,
+          pred.labels = c("Intercept", "Time"),  # predictor labels 
+          dv.labels = c("Beginning of treatment to end of experiment"),
+          string.p = "p-value",
+          show.stat = TRUE,
+          show.ci = FALSE, 
+          show.se = TRUE,
+          p.style = "scientific",
+          digits.p = 2,
+          title = "Supplementary Table 7.2 Effect of time on R1 (VGFG) frequency in control cages from linear mixed-effects model analysis, related to Fig. 3c")
+
+### VGFA ###
+control_VGFA = main.haplotypes.Ace %>% filter(haplotype_class == "VGFA" & treatment == "E" & tpt >= 2)
+
+model_control_VGFA = lmer(frequency ~ tpt +  (1 |cage), REML=F, data = control_VGFA)
+
+summary(model_control_VGFA)
+tidy(model_control_VGFA)
+
+tab_model(model_control_VGFA,
+          pred.labels = c("Intercept", "Time"),  # predictor labels 
+          dv.labels = c("Beginning of treatment to end of experiment"),
+          string.p = "p-value",
+          show.stat = TRUE,
+          show.ci = FALSE, 
+          show.se = TRUE,
+          p.style = "scientific",
+          digits.p = 2,
+          title = "Supplementary Table 7.3 Effect of time on R2 (VGFA) frequency in control cages from linear mixed-effects model analysis, related to Fig. 3c")
+
+### VAYG ###
+control_VAYG = main.haplotypes.Ace %>% filter(haplotype_class == "VAYG" & treatment == "E" & tpt >= 2)
+
+model_control_VAYG = lmer(frequency ~ tpt +  (1 |cage), REML=F, data = control_VAYG)
+
+summary(model_control_VAYG)
+tidy(model_control_VAYG)
+
+tab_model(model_control_VAYG,
+          pred.labels = c("Intercept", "Time"),  # predictor labels 
+          dv.labels = c("Beginning of treatment to end of experiment"),
+          string.p = "p-value",
+          show.stat = TRUE,
+          show.ci = FALSE, 
+          show.se = TRUE,
+          p.style = "scientific",
+          digits.p = 2,
+          title = "Supplementary Table 7.4 Effect of time on R3 (VAYG) frequency in control cages from linear mixed-effects model analysis, related to Fig. 3c")
+```
+
+## 4. Predicted (simulations) vs experimental evolution allele freq trajectories
+
+Anastasia Lyulina simulated the Ace allele frequency trajectories based on the viability model (github repository)
+
+### 4.1 Malathion-treated populations
+
+Format data for plotting Ace trajectories from simulations and experimental evolution
+
+```{r}
+# Load simulated data
+sim.treated = read_csv("./sim_allele_freqs/sim_allele_freqs_treated_cages.csv")
+
+# Format simulated Ace allele frequency trajectories 
+sim.treated.long = sim.treated %>%
+  pivot_longer(
+    cols = starts_with("t="),         
+    names_to = "t",                   
+    names_prefix = "t=",              
+    values_to = "frequency"               
+  )  %>%
+  dplyr::rename(generation = t, haplotype_class = allele) %>%
+  mutate(generation = as.numeric(generation)) %>%
+  mutate(haplotype_class = factor(haplotype_class, levels = c("IGFG", "VGFG", "VGFA", "VAYG"))) %>%  
+  mutate(group = "simulation", sd = NA, se = NA) %>%
+  select(haplotype_class, generation, frequency, sd, se, group)
+
+# Calculate summary statistics for P cages
+main.haplotypes.Ace.summary.P = main.haplotypes.Ace %>%
+  dplyr::filter(treatment == "P") %>%
+  mutate(generation = as.numeric(case_when(
+    Date == "2021-07-13" ~ "0",
+    Date == "2021-07-26" ~ "1",
+    Date == "2021-08-10" ~ "2",
+    Date == "2021-08-24" ~ "4",
+    Date == "2021-09-07" ~ "5",
+    Date == "2021-09-21" ~ "7",
+    Date == "2021-10-20" ~ "9",
+    Date == "2021-12-22" ~ "10",
+    TRUE ~ NA_character_  # Assign NA for dates that don't match
+  ))) %>%
+  dplyr::group_by(haplotype_class, generation) %>%
+  dplyr::summarize(mean_frequency = mean(frequency), replicates = n(), sd = sd(frequency), se = sd / sqrt(10), .groups = "keep") %>%
+  dplyr::rename(frequency = mean_frequency) %>%
+  mutate(haplotype_class = factor(haplotype_class, levels = c("IGFG", "VGFG", "VGFA", "VAYG"))) %>% 
+  mutate(group = "experimental.evolution") %>%
+  select(haplotype_class, generation, frequency, sd, se, group)
+
+# Combine simulated and experimental data
+data.P = bind_rows(sim.treated.long, main.haplotypes.Ace.summary.P)
+
+# Check levels to confirm
+levels(data.P$haplotype_class)
+```
+
+### 
+
+```{r}
+# Defining the maximum and minimum values for the left axis
+max_left_y = 1
+min_left_y = 0
+
+# Define the custom colors for each haplotype (allele)
+haplotype_labels = c("S", "R1", "R2", "R3")
+#haplotype_values = c("#30A4BC", "#ffce1b", "#EC4176", "#782E6E")
+haplotype_values = c("#194f94","#ce8e59","#e1625e", "#702771")
+
+# Define the linetype for simulations vs experimental evolution
+group_values = c("solid", "dashed")
+group_labels = c("Experimental\n evolution", "Viability selection\n model")
+
+# Create the plot
+Ace.P.simulated_plot = ggplot(data.P) +
+  
+  # Annotate to indicate which generations malathion was applied
+  annotate("rect", xmin=1, xmax=5, ymin=-Inf, ymax=Inf, alpha=0.2, fill="#FFA500") +
+  annotate("rect", xmin=5, xmax=6, ymin=-Inf, ymax=Inf, alpha=0.4, fill="#FFA500") +
+  
+  # Plot the lines for both simulated and experimental data, grouped by 'group' and colored by haplotype
+  geom_line(aes(x = generation, y = frequency, group = interaction(group, haplotype_class), 
+                color = haplotype_class, linetype = group), size = 1) +
+  
+  # Plot points for both simulated and experimental data, grouped by 'group' and colored by haplotype
+  geom_point(aes(x = generation, y = frequency, group = interaction(group, haplotype_class), 
+                color = haplotype_class, linetype = group), size = 2.5) +
+  
+  # Plot standard error bars for experimental data (if available)
+  geom_errorbar(data = subset(data.P, group == "experimental.evolution"), 
+                aes(x = generation, ymin = frequency - se, ymax = frequency + se, color = haplotype_class), 
+                width = 0.1, alpha = 0.7) +
+  
+  # legend for haplotypes
+  scale_linetype_manual("", 
+                        values = group_values,
+                        labels = group_labels) +
+  
+  # legend for simulation vs experimental evolution
+  scale_color_manual("", 
+                     values = haplotype_values, 
+                     labels = haplotype_labels) +
+  
+  # Y-axis scaling and limits
+  scale_y_continuous(name = expression(italic("Ace") ~ allele ~ frequency),
+                     breaks = seq(min_left_y, max_left_y, 0.2), 
+                     limits = c(-0.15, 1)) +
+  
+  # X-axis scaling and limits
+  scale_x_continuous(name = "Generation", breaks = seq(0, 10, 1), limits = c(0, 10)) +
+  
+  # Plot title
+  ggtitle("Malathion-treated cages") +
+  
+  # Apply classic theme with custom formatting
+  theme_classic() +
+  theme(
+    axis.title.y = element_text(size = 18),
+    axis.title.x = element_text(size = 18),
+    plot.title = element_text(size = 18, hjust = 0.5),
+    axis.text.x = element_text(size = 18),
+    axis.text.y = element_text(size = 16),
+    
+    legend.position = "right",
+    legend.justification = "right",  # Center the legend horizontally
+    legend.direction = "vertical",   # Arrange the legend items horizontally
+    
+    # Position the legend inside the plot and remove the legend title
+    legend.background = element_rect(fill = "transparent"),
+    legend.box.just = "left",
+    legend.margin = margin(3, 3, 3, 3),
+    legend.text = element_text(size = 15),
+    legend.spacing.y = unit(1, "cm"),
+    legend.key.size = unit(1, "cm")  # Increase size of legend symbols
+  )
+
+Ace.P.simulated_plot
+
+# Save the plot
+ggsave("./plots/class_frequency_P_simulation.png", plot = Ace.P.simulated_plot, width = 7, height = 4.5)
+```
+
+### 4.2 Untreated populations
+
+```{r}
+# Load simulated data
+sim.untreated = read_csv("./sim_allele_freqs/sim_allele_freqs_untreated_cages.csv")
+
+# Format simulated Ace allele frequency trajectories 
+sim.untreated.long = sim.untreated %>%
+  pivot_longer(
+    cols = starts_with("t="),         
+    names_to = "t",                   
+    names_prefix = "t=",              
+    values_to = "frequency"               
+  )  %>%
+  dplyr::rename(generation = t, haplotype_class = allele) %>%
+  mutate(generation = as.numeric(generation)) %>%
+  mutate(haplotype_class = factor(haplotype_class, levels = c("IGFG", "VGFG", "VGFA", "VAYG"))) %>%  
+  mutate(group = "simulation", sd = NA, se = NA) %>%
+  select(haplotype_class, generation, frequency, sd, se, group)
+
+# Calculate summary statistics for E cages
+main.haplotypes.Ace.summary.E = main.haplotypes.Ace %>%
+  dplyr::filter(treatment == "E") %>%
+  mutate(generation = as.numeric(case_when(
+    Date == "2021-07-13" ~ "0",
+    Date == "2021-07-26" ~ "1",
+    Date == "2021-08-10" ~ "2",
+    Date == "2021-08-24" ~ "4",
+    Date == "2021-09-07" ~ "5",
+    Date == "2021-09-21" ~ "7",
+    Date == "2021-10-20" ~ "9",
+    Date == "2021-12-22" ~ "10",
+    TRUE ~ NA_character_  # Assign NA for dates that don't match
+  ))) %>%
+  dplyr::group_by(haplotype_class, generation) %>%
+  dplyr::summarize(mean_frequency = mean(frequency), replicates = n(), sd = sd(frequency), se = sd / sqrt(10), .groups = "keep") %>%
+  dplyr::rename(frequency = mean_frequency) %>%
+  mutate(haplotype_class = factor(haplotype_class, levels = c("IGFG", "VGFG", "VGFA", "VAYG"))) %>% 
+  mutate(group = "experimental.evolution") %>%
+  select(haplotype_class, generation, frequency, sd, se, group)
+
+# Combine simulated and experimental data
+data.E = bind_rows(sim.untreated.long, main.haplotypes.Ace.summary.E)
+
+# Check levels to confirm
+levels(data.E$haplotype_class)
+```
+
+```{r}
+# Defining the maximum and minimum values for the left axis
+max_left_y = 1
+min_left_y = 0
+
+# Define the custom colors for each haplotype (allele)
+haplotype_labels = c("S", "R1", "R2", "R3")
+#haplotype_values = c("#30A4BC", "#ffce1b", "#EC4176", "#782E6E")
+haplotype_values = c("#194f94","#ce8e59","#e1625e", "#702771")
+
+# Define the linetype for simulations vs experimental evolution
+group_values = c("solid", "dashed")
+group_labels = c("Experimental\n evolution", "Viability selection\n model")
+
+# Create the plot
+Ace.E.simulated_plot = ggplot(data.E) +
+  
+ 
+  # Plot the lines for both simulated and experimental data, grouped by 'group' and colored by haplotype
+  geom_line(aes(x = generation, y = frequency, group = interaction(group, haplotype_class), 
+                color = haplotype_class, linetype = group), size = 1) +
+  
+  # Plot the lines for both simulated and experimental data, grouped by 'group' and colored by haplotype
+  geom_point(aes(x = generation, y = frequency, group = interaction(group, haplotype_class), 
+                color = haplotype_class, linetype = group), size = 2.5) +
+  
+  # Plot standard error bars for experimental data (if available)
+  geom_errorbar(data = subset(data.E, group == "experimental.evolution"), 
+                aes(x = generation, ymin = frequency - se, ymax = frequency + se, color = haplotype_class), 
+                width = 0.1, alpha = 0.7) +
+  
+  # legend for haplotypes
+  scale_linetype_manual("", 
+                        values = group_values,
+                        labels = group_labels) +
+  
+  # legend for simulation vs experimental evolution
+  scale_color_manual("", 
+                     values = haplotype_values, 
+                     labels = haplotype_labels) +
+  
+  # Y-axis scaling and limits
+  scale_y_continuous(name = expression(italic("Ace") ~ allele ~ frequency),
+                     breaks = seq(min_left_y, max_left_y, 0.2), 
+                     limits = c(-0.15, 1)) +
+  
+  # X-axis scaling and limits
+  scale_x_continuous(name = "Generation", breaks = seq(0, 10, 1), limits = c(0, 10)) +
+  
+  # Plot title
+  ggtitle("Untreated cages") +
+  
+  # Apply classic theme with custom formatting
+  theme_classic() +
+  theme(
+    axis.title.y = element_text(size = 18),
+    axis.title.x = element_text(size = 18),
+    plot.title = element_text(size = 18, hjust = 0.5),
+    axis.text.x = element_text(size = 18),
+    axis.text.y = element_text(size = 16),
+    
+    legend.position = "right",
+    legend.justification = "right",  # Center the legend horizontally
+    legend.direction = "vertical",   # Arrange the legend items horizontally
+    
+    # Position the legend inside the plot and remove the legend title
+    legend.background = element_rect(fill = "transparent"),
+    legend.box.just = "left",
+    legend.margin = margin(3, 3, 3, 3),
+    legend.text = element_text(size = 15),
+    legend.spacing.y = unit(1, "cm"),
+    legend.key.size = unit(1, "cm")  # Increase size of legend symbols
+  )
+
+Ace.E.simulated_plot
+
+#Save the plot
+ggsave("./plots/class_frequency_E_simulation.png", plot = Ace.E.simulated_plot, width = 7, height = 4.5)
+```
+
+```{r}
+library(ggpubr)
+
+# Assuming Ace.P.simulated_plot and Ace.E.simulated_plot are your ggplot objects
+combined_plot= ggarrange(Ace.P.simulated_plot, Ace.E.simulated_plot,
+                            ncol = 2, nrow = 1,  
+                            common.legend = TRUE,
+                            legend = "right")  # Place legend on the right
+
+combined_plot
+
+ggsave("./plots/class_frequency_E_P_simulation.png", plot = combined_plot, width = 16, height = 5)
+```
+
+## 5. References
+
+Vignette for preparing regression tables <https://strengejacke.github.io/sjPlot/articles/tab_model_estimates.html#show-or-hide-further-columns>
