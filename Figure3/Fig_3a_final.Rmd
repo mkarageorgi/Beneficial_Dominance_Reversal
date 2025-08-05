@@ -1,0 +1,232 @@
+---
+title: "Weather_&_Census_Timeseries_Fig3a"
+author: "Caitlynn Tran & Marianna Karageorgi"
+date: '2024-01-15'
+---
+
+# 1 Census size data
+
+## 1.1 Data description
+
+The data consists of repeated measurements with a hierarchical/nested structure:
+
+-   Level 1 = Timepoint (TP) (repeated measures)
+
+-   Level 2 = Treatment (E no malathion/not-treated, P with malathion/treated)
+
+-   Level 3 = Treatment Replication (E1-E10 cages, P1 - P10 cages)
+
+```{r}
+# load packages  
+library(tidyverse)
+library(Rmisc) #for stats
+library(scales) # to plot to axis
+library(cowplot) # to arrange graphs
+library(lubridate) # library to convert a character column to a date format
+```
+
+Select the Response and Explanatory variables for census data & add initial and final tp data
+
+```{r}
+# data from the images that Andy counted
+census = read.csv("./counts_final.csv") %>%
+  
+  #convert character to date format
+  mutate(Date = lubridate::ymd(Date)) %>% 
+  
+  dplyr::filter(Treatment == "E"|Treatment == "P") %>%
+  
+  # Multiply by 40 because region of interest is 2.5% of the cage
+  dplyr::mutate(count = count * 40) %>% 
+  
+  #select the variable we will use for analysis
+  dplyr::select(Date,TP,Treatment, Treatment_Cage, Replicate, count)  
+
+# add initial timepoint 0 when the cages started on June 21st 2021. The cages began with 1000 individuals
+# add final timepoint  5  by when the cages collapse on Dec 22nd (to match up with last timepoint of other data). The cages ended with 0 adult individuals
+
+initial_final_tps = data.frame(Date = rep(c("2021-06-21","2021-12-22"),times=c(20,20)),
+                                TP = rep(c(0,5), times=c(20,20)),
+                                Treatment = rep(c("E","P","E","P"),times=c(10,10,10,10)),
+                                Treatment_Cage = rep(c("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "E10", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10"),2),
+                                Replicate= rep("A",40), # for these two timepoints there are no replicates.There is only one number 1000 for timepoint 0 and 0 for timepoint 5
+                                count = rep(c(1000,0),times=c(20,20)))
+
+initial_final_tps$Date = ymd(initial_final_tps$Date) #convert character to date format
+
+census_all = rbind(census,initial_final_tps) %>%
+  arrange(TP)
+```
+
+## 1.2 Summary statistics
+
+Summarize data to the cage level
+
+```{r}
+census_cage = census_all %>% 
+  dplyr::group_by(Date, Treatment, Treatment_Cage) %>%
+  dplyr::summarize(
+    mean_Count = mean(count),
+    n_class = n(), .groups = "keep")
+
+census_cage$Treatment = factor(census_cage$Treatment,
+                                    levels=c("P","E"))
+
+summary_census = summarySE(data=census_cage, measurevar = 'mean_Count', groupvars = c("Date","Treatment"))
+```
+
+# 2 Weather data
+
+```{r}
+# weather data from Paul Schmidt's lab
+weather <- read.csv("./2021orchardweatherdata.csv") 
+
+# set the start date for the experiment (will use later as a reference point to filter out some of the data)
+start_date <- as.Date("2021-06-21")
+
+temperature <- weather[3:nrow(weather), ] %>% # Subset weather rows from index 3 to the last row
+  dplyr::mutate(Date = lubridate::mdy(TIMESTAMP)) %>% #convert character to date format
+  dplyr::select(Date, Temp_C_Avg, Temp_C)  %>%# Select relevant variables
+  dplyr::filter(Date - start_date >= 0)%>% # Experiment start date is June 21st
+  dplyr::mutate(Temp_C_Avg = as.double(Temp_C_Avg), Temp_C = as.double(Temp_C))%>% 
+  dplyr::group_by(Date)%>% #group by Date to calculate the average temp for each day
+  dplyr::summarize(Low = min(Temp_C_Avg), High = max(Temp_C_Avg), Avg_Temp = mean(Temp_C_Avg))
+
+relative_humidity<- weather[3:nrow(weather), ] %>% # Subset weather rows from index 3 to the last row
+  dplyr::mutate(Date = lubridate::mdy(TIMESTAMP)) %>% #convert character to date format
+  dplyr::select(Date, RH) %>%  # Select relevant variables
+  filter(Date - start_date >= 0)%>%
+  mutate(RH = as.double(RH))%>%
+  dplyr::group_by(Date)%>%
+  dplyr::summarize(Avg_RH = mean(RH))
+```
+
+# 3 Statistics
+
+The relationship between the time and the population size is not linear but has a curvilinear (e.g., parabolic) pattern. A quadratic model can capture the rise and fall in population sizes, which might be indicative of boom-bust cycles.
+
+```{r}
+# load packages for statistics 
+library(lme4)
+library(lmerTest)
+```
+
+Questions to address:
+
+1\. Did the census size change over time without the insecticide treatment?
+
+2\. Did the insecticide treatment affect the population dynamics over time?
+
+I want to fit a quadratic model to the population size data where the dependent variable is mean_Count (nr flies/cage/timepoint) and the independent variable is Date. I also want to include in the model treatment as a fixed factor and cage as a random factor.
+
+```{r}
+library(lme4)
+
+# mean_Count ~ Date + I(Date^2) represents the quadratic term
+# (1|cage) represents the random effect of cage
+
+# Define the start date
+start_date <- as.Date("2021-06-21")
+
+# Calculate the number of days since the start date
+census_cage$Date_numeric <- as.numeric(census_cage$Date - start_date)
+
+# Scale the numeric Date variable
+## Scaling was done to help in stabilizing the model fitting process, make the interpretation of the quadratic term more straightforward, and reduce potential multicollinearity between the linear and quadratic terms of the date
+census_cage$Date_numeric_scaled <- scale(census_cage$Date_numeric)
+
+# Fit the model
+model <- lmer(mean_Count ~ Date_numeric_scaled + I(Date_numeric_scaled^2) + Treatment + (1|Treatment_Cage), REML=F, data = census_cage)
+
+summary(model)
+```
+
+# 4 Plot census
+
+```{r}
+library(ggpubr) 
+library(ggthemes)
+```
+
+```{r}
+# defining the maximum and minimum values for the left axis
+max_left_y_census = 12500/1000
+min_left_y_census = 0/1000
+
+
+treatment_labels = c("Treated", "Untreated")
+treatment_values = c("#FFA500","#274060")
+
+
+census_temp_plot <- ggplot() +
+
+# Annotate to indicate when malathion was applied
+annotate("rect", xmin=as.Date("2021-07-21"), xmax=as.Date("2021-08-25"), ymin=-Inf, ymax=Inf, alpha=0.2, fill="#FFA500") +
+annotate("rect", xmin=as.Date("2021-08-25"), xmax=as.Date("2021-09-06"), ymin=-Inf, ymax=Inf, alpha=0.4, fill="#FFA500") +
+
+  #this plots for individual cages - do not plot for final
+  # geom_line(data=census_cage, aes(x = Date, y = mean_Count/1000,group=Treatment_Cage, color= Treatment), size= 0.5, alpha = 0.6) +
+  
+  #this plots for mean of cages across time points
+  geom_line(data=summary_census, 
+            aes(x=Date, y=mean_Count/1000, group=Treatment, color = Treatment), linewidth= 1.5, alpha = 1) +  
+  
+  scale_color_manual(name = "Malathion",
+                   labels = treatment_labels,
+                   values = treatment_values) +
+  
+  #this plots for standard error of cages across time points
+  geom_errorbar(data=summary_census, 
+                aes(x=Date, ymin=(mean_Count-se)/1000, ymax=(mean_Count+se)/1000, color = Treatment), width=.1) +
+
+  scale_y_continuous(name = "Adult census \n estimate (x1000)",
+                     breaks = seq(min_left_y_census, max_left_y_census, 2500/1000),
+                     limits = c(-1874/1000, 12500/1000))+
+  
+  scale_x_date(limits = as.Date(c("2021-06-21","2021-12-22")))+
+  xlab("") + # removes the x axis title
+  theme_classic() +
+  
+  #this adds text when malathion was applied
+  annotate("text", x = as.Date("2021-08-09"), y = 11500/1000, label = "2.5\nppm", size = 7, color = "black")+
+  annotate("text", x = as.Date("2021-08-31"), y = 11500/1000, label = "7.5\nppm", size = 7, color = "black") +
+  
+  # this code annotates the plot with the generations
+   annotate("rect",
+           xmin = c(as.Date("2021-06-21"), as.Date("2021-07-01"), as.Date("2021-08-01"), as.Date("2021-09-01"), as.Date("2021-10-01"), as.Date("2021-11-01"), as.Date("2021-12-01")),
+           xmax = c(as.Date("2021-07-01"), as.Date("2021-08-01"), as.Date("2021-09-01"), as.Date("2021-10-01"), as.Date("2021-11-01"), as.Date("2021-12-01"), as.Date("2021-12-22")),
+           ymin = -1874/1000,
+           ymax = -624/1000,
+           color = "black",
+           alpha = 0)+
+
+  #this adds the labels in the center of the rectangles
+  annotate("text", x = c(as.Date("2021-06-26"), as.Date("2021-07-17"), as.Date("2021-08-17"), as.Date("2021-09-17"), as.Date("2021-10-17"), as.Date("2021-11-17"), as.Date("2021-12-10")),
+           y = -1250/1000,
+           label = c("1", "2-5", "5-8", "8-10", "11-12", "12", "(o)"), size = 6) +
+
+  #this adds the title above the timeline that says "Generations"
+  annotate("text", x = as.Date("2021-09-17"), y = 0/1000, label = "Generations", size = 8) +
+
+  theme(
+    #Increase the size of the axis titles
+    axis.title.y = element_text(size = 25),
+
+    # Increase the size of the axis tick labels
+    axis.text.x = element_text(size = 22),
+    axis.text.y = element_text(size = 22),
+
+    # this positions the legend inside the plot in the upper right hand corner
+    legend.position = c(0.99, 0.99),
+        legend.background = element_rect(fill = "transparent"),
+        legend.justification = c("right", "top"),
+        legend.box.just = "right",
+        legend.margin = margin(3, 3, 3, 3),
+        legend.title = element_text(size = 23),
+        legend.text = element_text(size = 20)
+    )
+  
+census_temp_plot
+
+ggsave("census_plot.png", width = 10, height = 5)
+```
