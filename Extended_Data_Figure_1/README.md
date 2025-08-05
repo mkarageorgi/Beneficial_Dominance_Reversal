@@ -4,7 +4,7 @@ This code reproduces Extended Data Figure 1, which characterizes the frequencies
 
 Data available at: 
 - DGRP panel: http://dgrp2.gnets.ncsu.edu/data.html
-- LNPA panel: Add link
+- LNPA panel
 
 Code and analysis by Marianna Karageorgi.
 
