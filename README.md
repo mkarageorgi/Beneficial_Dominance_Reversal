@@ -5,6 +5,6 @@ Code and data used in "Dominance reversal protects large-effect resistance polym
 
 ## Data Availability
 
-The data used in this analysis will be available on Dryad upon acceptance of the manuscript.
+The data used in this analysis are either available in the directory of each Figure or in Dryad https://doi.org/10.5061/dryad.w0vt4b937.
 
 
