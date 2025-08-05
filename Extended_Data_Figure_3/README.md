@@ -1,5 +1,5 @@
 ## Extended Data Figure 3
-This code reproduces Extended Data Figure 3 (this code is the same as in the Figure 3 folder)
+This code reproduces Extended Data Figure 3 (this code is the same as in the Figure 3 directory)
 
 ### How to generate the figure
 * First, obtain the relevant file either within the data folder. 
