@@ -4,7 +4,7 @@ This code reproduces Figure 4.
 
 How to generate the figure:
 
-### First, obtain the following files that were generated earlier:
+### Necessary data files:
 - orch2021_Downsampled_META_Filtered.RData - the allele frequency data from the orchard 2021 experiment (available at https://doi.org/10.5061/dryad.w0vt4b937) 
 - dm3.fa.out - repeat masker (available at https://doi.org/10.5061/dryad.w0vt4b937) 
 - Orchard2021/inbredv2_withHets.orch2021.{chromosome}.snpTable.numeric  - inbred line SNP tables for each chromosome (available at https://doi.org/10.5061/dryad.w0vt4b937)
