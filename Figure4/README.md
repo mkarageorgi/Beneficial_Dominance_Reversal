@@ -20,7 +20,7 @@ Rscript --vanilla 01_glm_malation.R X
 
 These scripts are highly parallelized and computationally intensive, so a cluster environment may be neccessary. Then, run `02_summarize_glm.R`. This script generates a file `data/raw/sigsite_malation.csv` that would be used in downstream computations.
 
-### Part 2. Linked SNP selection procedure using linkage information from the inbred lines to identify SNPs linked (Ace-linked) and not linked (control) to the sweeping R2 and R3 Ace alleles across the genome. We used these sets of SNPs to quantify the extent of both the forward Ace sweep during malathion treatment and the reverse Ace sweep post-treatment
+### Part 2. Linked SNP selection procedure to identify SNPs linked (Ace-linked) and not linked (control) to the sweeping R2 and R3 Ace alleles across the genome. Use these sets of SNPs to quantify the extent of both the forward Ace sweep during malathion treatment and the reverse Ace sweep post-treatment
 
 
 * Run all numbered R and Python scripts in this directory in order. These scripts will generate small tables in the `plot_data` folder that are used for plotting.
