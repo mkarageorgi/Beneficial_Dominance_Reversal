@@ -1,0 +1,408 @@
+---
+title: "Clustering & heatmap for Cyp6g1 sequences in LNPA panel & frequencies of derived Cyp6g1 alleles in LNPA panel "
+author: "Marianna Karageorgi"
+date: "2025-04-27"
+---
+
+## 1. Data
+
+```{r}
+rm(list=ls())
+
+library(tidyverse)
+library(ggdendro)
+library(dendextend)
+library(data.table)
+library(grid)
+```
+
+-   Based on the malathion resistance GWAS in Battlay et al 2018, the SNP at position 2R:8072837 (genome version 5) is in complete linkage disequilibrium with derived alleles of Cyp6g1 in DGRP. The *Accord* transposable element is present in derived alleles. Therefore the presence of the marker SNP at position 2R:8072837 indicates that the line may carry the *Accord* transposable element.
+
+    (Battlay et al 2018: <https://pubmed.ncbi.nlm.nih.gov/30190421/>)
+
+-   The SNP table for the inbred lines used in Orchard 2021 can be found in the Google Drive in this link:
+
+    <https://drive.google.com/drive/u/0/folders/1gw2rLUUoO_AT9DdcfINohVPSwA61vHLO>
+
+    In the SNP dataframe, **columns** represent the inbred lines while **rows** represent the biallelic sites across the 2R chromosome.
+
+-   Prepare a data frame with information on inbred line, derived/ancestral Cyp6g1 allele, and biallelic SNPs within the extended gene region of Cyp6g1. Convert the ATGC character representations of biallelic SNPs to numerical values, coded as 0 if they match the reference line, coded as 1 if alternative allele, coded as 0.5 if IUPAC letter for heterozygous.
+
+-   The Cyp6g1 coordinates of extended gene region using the reference genome v5.39:
+
+    2R:8,073,172..8,075,936 [+]
+
+-   The coordinate for the marker SNP associated with derived Cyp6g1 alleles using the reference genome v 5.39:
+
+    chr2R:8072837
+
+### 1.1 Panel: Ancestral / Derived Cyp6g1 alleles
+
+At position 8072837:
+
+Reference allele is C and alternative allele is T.
+
+In the LNPA inbred lines, the reference allele C is also the minor one.
+
+Since in the experiment the allele that rises in frequency is the major and alternative one (T), T is the derived and adaptive.
+
+C = Ancestral & T = Derived
+
+```{r}
+data = fread("./data/inbredv2_withHets.orch2021.2R.snpTable.npute")
+
+# Filter rows based on the resistance mutation in column 'X3R' which corrensponds to positions
+data.Cyp6g1.allele = data %>%
+  filter(`2R` %in% c(8072837)) %>%
+  
+# Transpose the resulting data frame
+  t() %>%
+  
+# Convert the transposed data frame to a regular data frame
+  as.data.frame() %>%
+  
+# Set the column names based on the values from the first row
+  setNames(unlist(.[1,])) %>%
+  
+# Convert the row names to a new column named "line"
+  rownames_to_column(var = "LNPA_line") %>%
+
+# filter position line 
+  filter(!LNPA_line == "2R") 
+
+
+# Mutate 'Haplotype.aa' column based on conditions
+data.Cyp6g1.marker = data.Cyp6g1.allele %>%
+   
+  mutate(marker = case_when(
+    `8072837` == "C" ~ "A.A",
+    `8072837` == "T" ~ "D.D",
+    `8072837` == "Y" ~ "A.D"
+  )) %>%
+  
+  filter(!LNPA_line == "Ref") %>%
+
+  # Select lines & haplotypes
+  select(LNPA_line, marker)
+
+
+data.Cyp6g1.marker.summary = data.Cyp6g1.marker %>%
+  group_by(marker) %>%
+  summarise(count = n())
+```
+
+```{r}
+library(writexl)
+
+write_xlsx(data.Cyp6g1.allele, './Supplementary_Table_1.xlsx')
+```
+
+#### 1.1.1 Table with Cyp6g1 allele in LNPA panel
+
+```{r}
+library(kableExtra)
+library(htmltools)
+library(webshot)
+
+data.Cyp6g1.allele.format = data.Cyp6g1.allele %>%
+  rename(`LNPA Line` = LNPA_line,
+         `2R:8072837` = `8072837`)
+
+# Create table directly from data.Cyp6g1.allele
+table.Cyp6g1.allele = kable(data.Cyp6g1.allele.format, 
+                           digits = 4, 
+                           align = 'l',
+                           caption = "<b>Supplementary Table 1. Cyp6g1 marker (position 8072837) in LNPA lines. C = Ancestral, T = Derived.</b>",
+                           escape = FALSE) %>%
+  kable_classic(full_width = TRUE, 
+                html_font = "Times New Roman", 
+                font_size = 16) %>%
+  kable_styling(bootstrap_options = c("striped", "hold_position"),
+                position = "center",
+                latex_options = c("striped", "hold_position")) %>%
+  row_spec(0, bold = TRUE, font_size = 16) %>%  # Header row
+  row_spec(1:nrow(data.Cyp6g1.allele), font_size = 14)  # Data rows
+
+table.Cyp6g1.allele
+
+# Save table
+save_kable(table.Cyp6g1.allele, 
+           file = "./tables/Supplementary_Table_1.html")
+```
+
+#### 1.1.2 Table with Cyp6g1 allele frequencies in LNPA panel
+
+Table with derived and non-derived Cyp6g1 allele frequencies in the inbred lines
+
+```{r}
+library(kableExtra)
+library(htmltools)
+library(webshot)
+
+# Count allele frequencies for figure X
+allele.count.Cyp6g1 = data.Cyp6g1.marker %>%
+  
+  # Separate the Haplotype.aa column into two new columns (Allele.1 and Allele.2)
+  separate(marker, into = c("Allele.1", "Allele.2"), sep = "\\.") %>%
+  
+  # Pivot the data into a longer format to have a single column for haplotypes
+  pivot_longer(cols = Allele.1:Allele.2, 
+               names_to = "Allele", 
+               values_to = "Cyp6g1_allele") %>%
+  
+  # Count occurrences of each haplotype
+  dplyr::count(Cyp6g1_allele) %>%
+  
+  # Calculate frequency of each haplotype
+  mutate(relative_frequency = round(n / sum(n) * 100, 2)) %>%
+  
+  # Keep only Ace allele & relative frequency, renaming columns for display
+  select(`Cyp6g1 allele` = Cyp6g1_allele, `Relative frequency (%)` = relative_frequency) 
+  
+
+
+# View the result
+allele.count.Cyp6g1
+
+#### Prepare table ####
+table.allele.count.Cyp6g1 = kable(x = allele.count.Cyp6g1, digits = 4, align = 'l',
+                               # caption = "<b style='font-size:22px;'>Relative frequencies of sensitive and resistant <i>Ace</i> alleles in LNPA lines</b>",
+                               escape = FALSE) %>%
+                         kable_classic(full_width = TRUE, html_font = "Arial", font_size = 22) %>%
+                         kable_styling(latex_options = c("striped", "hold_position"), position = "center") %>%
+                         row_spec(0, bold = TRUE, font_size = 20) %>%  # Make header bold and set font size
+                         row_spec(1:nrow(allele.count.Cyp6g1), font_size = 20)  # Smaller font for values
+
+table.allele.count.Cyp6g1
+
+# Save the table as an HTML file
+save_kable(table.allele.count.Cyp6g1, file = "./tables/table.allele.count.Cyp6g1.html")
+
+
+# Use webshot to convert HTML to PDF
+webshot("./tables/table.allele.count.Cyp6g1.html", file = "./tables/table.allele.count.Cyp6g1.html.pdf")
+```
+
+### 1.2 Panel: Biallelic SNPs in Cyp6g1 region
+
+```{r}
+# Filter rows which corrensponds to positions in the extended Cyp6g1 region and include more upstream region
+data.Cyp6g1.region = data %>%
+  filter(between(`2R`, 8070000, 8075936)) %>%
+
+# Transpose the resulting data frame
+  t() %>%
+  
+# Convert the transposed data frame to a regular data frame
+  as.data.frame() %>%
+  
+# Set the column names based on the values from the first row
+  setNames(unlist(.[1,])) %>%
+  
+# Convert the row names to a new column named "line"
+  rownames_to_column(var = "LNPA_line") %>%
+
+# filter position line 
+  filter(!LNPA_line == "2R") 
+```
+
+Convert the ATGC character representations of biallelic SNPs to numerical values, coded as 0 if they match the reference line, coded as 1 if alternative allele, coded as 0.5 if IUPAC letter for heterozygous.
+
+```{r}
+# The first row is the reference sequence
+
+# Convert the SNP matrix to a character matrix if it's not already
+data_matrix = as.matrix(data.Cyp6g1.region, stringsAsFactors = FALSE)
+
+# Initialize a new matrix to hold the numeric values
+numeric.data.Cyp6g1.region = matrix(nrow = nrow(data_matrix), ncol = ncol(data_matrix))
+
+# Assign the first column of the numeric matrix to be the same as the first column of the data matrix
+numeric.data.Cyp6g1.region[, 1] = data_matrix[, 1]
+
+# Define the IUPAC codes for heterozygous alleles 
+iupac_codes = c("R", "Y", "S", "W", "K", "M", "B", "D", "H", "V", "N")
+
+# Iterate over each column (genomic position), starting from the second column
+for (col in 2:ncol(data_matrix)) {
+  ref_allele <- data_matrix[1, col] # Reference allele for this column
+  
+  # Iterate over each row (inbred line)
+  for (row in 1:nrow(data_matrix)) {
+    allele <- data_matrix[row, col]
+    
+    if (allele %in% iupac_codes) {
+      # Heterozygous
+      numeric.data.Cyp6g1.region[row, col] <- 0.5
+    } else if (allele == ref_allele) {
+      # Same as reference
+      numeric.data.Cyp6g1.region[row, col] <- 0
+    } else {
+      # Alternative allele
+      numeric.data.Cyp6g1.region[row, col] <- 1
+    }
+  }
+}
+
+# Assign row and column names to the new numeric matrix
+colnames(numeric.data.Cyp6g1.region) = colnames(data_matrix)
+rownames(numeric.data.Cyp6g1.region) = rownames(data_matrix)
+
+# Turn numeric_data_matrix back to data.frame
+numeric.data.Cyp6g1.region= as.data.frame(numeric.data.Cyp6g1.region)
+```
+
+### 1.3 Panel: Derived/Non derived allele & biallelic SNPs
+
+```{r}
+data.Cyp6g1 = inner_join(data.Cyp6g1.marker,numeric.data.Cyp6g1.region, by = "LNPA_line") 
+```
+
+## 2. Heatmap
+
+### 3.1 Heatmap Cyp6g1 region
+
+We will first change scale the derived alleles so as to be able to label with a different color. We scale them by 3. The coordinate for the Cyp6g1 derived allele is chr2R:8072837 using the reference genome v 5.39. So, alleles that are as the reference (0) will remain 0, alleles that are hetero (0.5) will turn to 1.5, and alleles that are the alternative (1) will turn to 3.
+
+We will then transform the data to a "long" format, where each row only contains values for one measurement.
+
+In addition, before the transformation,
+
+```{r}
+# Scale columns with the derived allele
+
+# Define the columns you want to scale and multiply by 3
+columns_to_scale = c("8072837")
+
+# Convert all columns except the first one to numeric
+numeric.data.Cyp6g1.region = numeric.data.Cyp6g1.region %>%
+  mutate(across(-1, as.numeric))
+
+# Apply the scaling and multiplication operation to the selected columns
+# I added +2 so as to differentiate the ref from the derived/minor - althought they are the same
+numeric.data.Cyp6g1.region = numeric.data.Cyp6g1.region %>%
+  mutate(across(all_of(columns_to_scale), ~ . * 3))
+
+# Heatmap
+# Data wrangling
+data_long = pivot_longer(data = numeric.data.Cyp6g1.region,
+                              cols = -c(LNPA_line),
+                              names_to = "position",
+                              values_to = "nucleotide")
+```
+
+Now we can use that new data frame, `data_long` to create our heatmap. In the `ggplot` package, we use the `geom_tile` layer for creating a heatmap. Given our prior experience with the y-axis labels being large, we will again use `theme` to make the accession numbers (the y-axis labels) a little smaller:
+
+```{r}
+# Convert "nucleotide" to a factor variable
+data_long$nucleotide = as.factor(data_long$nucleotide)
+
+# Create the heatmap plot
+heatmap_plot = ggplot(data = data_long, aes(x = position, y = LNPA_line, fill = nucleotide)) +
+  geom_tile() +
+  scale_fill_manual(values = c("grey50","gray70","grey90","yellow","orange"),
+                    labels = c("ref", "het", "alt", "het_resist", "resist") 
+                   # labels = c("0", "0.5", "1", "1.5", "3")
+                    ) +
+  scale_x_discrete("2R") +
+  theme(legend.position = "right",
+        axis.text.x = element_text(angle = 90),
+        axis.text.y = element_text(size = 6)) +
+  ylab("Inbred Line ID")
+
+heatmap_plot
+```
+
+Re-order the heatmap with lines carrying ancestral and derived alleles in homozygosity with corresponding color and then all heterozygous in grey
+
+```{r}
+# Define the order of the lines
+line_order = c("Ref", "LNPA.87", "LNPA.9","X12LN10.40","X12LN10.86","X12LN10.96","LNPA.38", "X12LN10.82", "LNPA.85", "LNPA.43_SP", "LNPA.36", "LNPA.29_SP", "X12LN6.4_B64", 
+                         "X12LN6.41_B47", "X12LN10.89", "X12LN10.38", "X12LN10.32", 
+                         "X12LN10.12", "X12LN10.10", "LNPA.37", "X12LN6.94_B19", 
+                         "X12LN6.82_B4", "X12LN6.46_B37", "X12LN6.45_B26", "X12LN10.95", 
+                         "X12LN10.43", "X12LN10.35", "LNPA.75_SP", 
+                         "LNPA.40", "LNPA.17", "LNPA.15_12LN.15", "LNPA.14", 
+                         "X12LN6.15_B41", "X12LN10.71_B", "LNPA.5_SP", "LNPA.53", 
+                         "X12LN6.86_B29", "X12LN6.79_B81",   
+                         "LNPA.8_SP", "LNPA.7_SP", "LNPA.79", "LNPA.77", "LNPA.66", 
+                         "LNPA.65_SP", "LNPA.62", "LNPA.61", "LNPA.58_SP", 
+                         "LNPA.47_SP", "LNPA.44", "LNPA.34", 
+                         "LNPA.31", "LNPA.3", "LNPA.2_SP", "LNPA.11", 
+                         "X12LN6.92_B3", "X12LN6.70_B33", "X12LN6.66_B2", 
+                         "X12LN6.50_B31", "X12LN6.49_B9", "X12LN6.31_B21", 
+                         "X12LN6.30_B66", "X12LN6.2_B71", "X12LN6.28_B69", 
+                         "X12LN6.16_B78", "X12LN6.12_B62", "X12LN10.97", 
+                           "X12LN10.84", 
+                         "X12LN10.83",  "X12LN10.80", 
+                         "X12LN10.70", "X12LN10.67", "X12LN10.65", 
+                         "X12LN10.59", "X12LN10.57", "X12LN10.29", 
+                         "X12LN10.23", "X12LN10.13")
+
+
+# Order the lines using the line_order directly
+data_long$line = factor(x = data_long$LNPA_line, 
+                               levels = line_order, 
+                               ordered = TRUE)
+
+# Convert "nucleotide" to a factor variable
+data_long$nucleotide = as.factor(data_long$nucleotide)
+
+# Create the heatmap plot
+heatmap_plot2 = ggplot(data = data_long, aes(x = position, y = LNPA_line, fill = nucleotide)) +
+  geom_tile() +
+  scale_fill_manual(values = c("grey50","gray70","grey90","yellow","orange"),
+                    labels = c("ref", "het", "alt", "het_derived", "derived")  
+                   # labels = c("0", "0.5", "1", "1.5", "3")
+                    ) +
+ 
+   
+  scale_x_discrete("2R") +
+  
+  theme(
+  axis.text.x = element_text(size = 4, angle = 90),
+  axis.text.y = element_text(size = 4),
+  axis.title.x = element_text(size = 12),
+  axis.title.y = element_blank(),
+  
+  legend.position = "right",
+  legend.text = element_text(size = 6),
+  legend.title = element_text(size = 8, face = "bold"),
+  legend.key.size = unit(0.4, "cm")
+) 
+ 
+
+heatmap_plot2
+
+ggsave("./plots/heatmap_Cyp6g1.png", plot = heatmap_plot2, width = 8, height = 5)
+```
+
+## References
+
+### 1. How to use mask?
+
+```{r}
+# Example data
+df <- data.frame(genomic_position = 1:100000)  # Replace with your actual data
+
+# Define position frames as start and end positions
+frames <- data.frame(start = c(1000, 5000, 10000), end = c(2000, 6000, 11000))
+
+# Create a mask
+mask <- sapply(df$genomic_position, function(pos) {
+  any(pos >= frames$start & pos <= frames$end)
+})
+
+# Filter using the mask
+filtered_df <- df[mask, ] 
+```
+
+### 2. Tutorial in dendrograms in R
+
+<https://atrebas.github.io/post/2019-06-08-lightweight-dendrograms/>
+
+How to color specific lines, see here:
+
+<https://r-graph-gallery.com/31-custom-colors-in-dendrogram.html>
+
+<http://www.sthda.com/english/wiki/beautiful-dendrogram-visualizations-in-r-5-must-known-methods-unsupervised-machine-learning#change-labels>
